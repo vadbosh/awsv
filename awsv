@@ -705,7 +705,7 @@ cmd_status() {
     if [ -z "$(fpr)" ]; then
         say "  GPG key   ${Y}none${N} — create it: awsv init"
     else
-        say "  GPG key   $(fpr | tail -c 17) \"$GPG_UID\" — encrypts every file in keys/"
+        say "  GPG key   $(fpr | tail -c 17) — encrypts every file in keys/; its name in gpg is \"$GPG_UID\""
         g="$(grip)"
         st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
         if [ "$st" = 1 ]; then

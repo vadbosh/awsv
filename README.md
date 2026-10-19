@@ -63,9 +63,10 @@ awsv status                      # done when it says "no keys left"
 
 What each step does:
 
-1. `init` creates a GPG key named `awsv local vault` and asks you for its
-   passphrase. `--take-default` comments out the old `[default]` in
-   `~/.aws/config`, because awsv writes its own.
+1. `init` creates a GPG key and asks you for its passphrase. Inside gpg the
+   key is named "awsv local vault". That is a name, not a command.
+   `--take-default` comments out the old `[default]` in `~/.aws/config`,
+   because awsv writes its own.
 2. `import` reads one section, checks the key against AWS, encrypts it and
    removes the section from `~/.aws/credentials`. A commented-out `#[client]`
    section works too.
