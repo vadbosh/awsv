@@ -1,8 +1,9 @@
 # awsv
 
 **awsv keeps your AWS access keys in an encrypted vault instead of a plain text
-file. `aws`, Terraform and the AWS SDKs keep working as before. You type one
-passphrase a day.**
+file. `aws`, Terraform and the AWS SDKs keep working as before. You type a
+passphrase once a day: one for every account, or a separate one for each
+account. You choose.**
 
 Normally an access key sits in `~/.aws/credentials` as plain text. Anything that
 reads that file gets the key: a backup, a disk snapshot, a script, an AI
@@ -22,7 +23,7 @@ aws s3 ls
   │  ~/.aws/config: "get the key from: awsv creds work"
   ▼
 awsv
-  │  opens keys/work.gpg — this needs the passphrase,
+  │  opens keys/work.gpg — this needs the passphrase of work,
   │  which gpg-agent keeps in memory for the time you chose
   │
   ├─ session mode:  trades the key for a one-hour session at AWS STS
@@ -36,31 +37,68 @@ Three things follow from this:
 - **The key is encrypted on disk.** Without the passphrase the file is
   unreadable bytes.
 - **`~/.aws/credentials` stays empty.** That is the correct state, not a fault.
-- **When the vault is locked and nobody can type the passphrase, the call
+- **When the account is locked and nobody can type the passphrase, the call
   fails.** A cron job, a script or an AI assistant has no terminal to ask in.
   Access closes by itself instead of staying open.
 
 ## What the vault does not protect
 
-While the vault is open, nothing asks before a key is read. Any process that runs
-as your user can get a key with `gpg --decrypt`, with no passphrase and no
+While an account is open, nothing asks before its key is read. Any process that
+runs as your user can get the key with `gpg --decrypt`, with no passphrase and no
 question. That includes scripts, cron jobs and an AI assistant that runs as you.
 It is the same thing that lets `aws` and Terraform work without prompts.
 gpg-agent has no confirmation for each use of such a key.
 
 | The vault protects | The vault does not protect |
 |---|---|
-| the keys on disk, in backups and in disk snapshots | the keys from processes of your user while the vault is open |
+| the keys on disk, in backups and in disk snapshots | the key of an open account from processes of your user |
 | the keys from other users of the machine | the keys from a root session |
-| the keys after `awsv lock`, at the end of the unlock window, after a reboot | a key someone already printed while the vault was open |
+| the keys after `awsv lock`, at the end of the unlock window, after a reboot | a key someone already printed while its account was open |
+| an account with its own passphrase, while you work in another one | |
 
-So keep the vault open only for as long as you need it:
+So keep an account open only for as long as you need it:
 
 ```bash
-awsv unlock 30m      # a short job: the vault closes by itself in 30 minutes
+awsv unlock 30m      # a short job: it closes by itself in 30 minutes
 awsv unlock 8h       # a working day
-awsv lock            # finished early: close it now
+awsv lock            # finished early: close everything now
 ```
+
+## One passphrase, or one for each account
+
+`awsv init` asks which one you want. You can change it later for any account.
+
+| | one passphrase (`shared`) | a passphrase per account (`own`) |
+|---|---|---|
+| what you type in the morning | one passphrase | one passphrase for each account you need |
+| `awsv unlock work 30m` opens | every account on the shared passphrase | `work` only |
+| `awsv lock work` closes | every account on the shared passphrase | `work` only |
+| an assistant or a script working in one account | can read the keys of all of them | can read the key of the open account only |
+| choose it when | the accounts are equally sensitive | one account is more sensitive, such as production |
+
+Both can live in one vault. For example, everyday accounts share one
+passphrase, and `prod` has its own:
+
+```bash
+awsv set prod --lock own        # asks for the current passphrase, then a new one for prod
+awsv unlock 8h                  # the passphrase of the [default] account, for the day
+awsv unlock prod 30m            # prod only, for half an hour
+awsv lock prod                  # close prod; the others stay open
+awsv passwd prod                # change the passphrase of prod only
+awsv set prod --lock shared     # back to the shared passphrase
+```
+
+To give every new account its own passphrase, run `awsv init --lock own`.
+Accounts already in the vault keep theirs. One account can still take the
+shared passphrase: `awsv add NAME --lock shared`.
+
+To open everything at the start of the day, run `awsv unlock all 8h`. It asks
+for each passphrase once: the shared one first, then each own one.
+
+`awsv status` shows two lines in each account's block. `lock` says which
+passphrase opens the account. `state` says whether it is open now and gives the
+exact command that opens or closes it. The state of the shared passphrase is
+also in the `VAULT` block.
 
 ## Install
 
@@ -77,7 +115,7 @@ create keys and does not touch `~/.aws`.
 ### You already have keys in `~/.aws/credentials`
 
 ```bash
-awsv init --take-default         # create the vault key; choose a passphrase
+awsv init --take-default         # one passphrase for all, or one for each? then choose it
 awsv import default --as work    # move the [default] section into the vault
 awsv import client               # move every other section by its name
 awsv status                      # done when it says "no keys left"
@@ -85,12 +123,15 @@ awsv status                      # done when it says "no keys left"
 
 What each step does:
 
-1. `init` creates a GPG key in `~/.gnupg` and asks you for its passphrase.
-   `--take-default` comments out the old `[default]` in `~/.aws/config`,
-   because awsv writes its own.
+1. `init` asks one question: `1` one passphrase for every account, or `2` a
+   passphrase for each account. With `1` it creates a GPG key in `~/.gnupg`
+   and asks you to choose the passphrase. With `2` each account gets its key
+   and its passphrase when you add or import it. `--take-default` comments out
+   the old `[default]` in `~/.aws/config`, because awsv writes its own.
 2. `import` reads one section, checks the key against AWS, encrypts it and
    removes the section from `~/.aws/credentials`. A commented-out `#[client]`
-   section works too.
+   section works too. With `2`, it asks you to choose the passphrase of this
+   account first.
 3. The section `[default]` needs `--as` with a real name. In awsv, "default" is
    not an account. It is a role: the account that `awsv use NAME` selected.
 4. `status` lists what is left. Import every section until it says
@@ -102,7 +143,7 @@ Open a new terminal after `init`. It adds `export GPG_TTY=$(tty)` to
 ### You start with no keys
 
 ```bash
-awsv init                              # create the vault key; choose a passphrase
+awsv init                              # answer 1 or 2, then choose the passphrase
 awsv add work --region eu-central-1    # type the key id, then the secret
 aws sts get-caller-identity            # shows the account and the user
 ```
@@ -122,9 +163,15 @@ AWS checks the key before awsv stores it. The first account becomes `[default]`.
 | remove an account | `awsv rm NAME`, then deactivate the key in IAM |
 | replace a key | `awsv rekey NAME`, then deactivate the old key in IAM |
 | see a stored key | `awsv show NAME` |
-| change the passphrase | `awsv passwd` |
-| open the vault for a while | `awsv unlock 30m`, `awsv unlock 8h` |
-| close the vault now | `awsv lock` |
+| change the shared passphrase | `awsv passwd` |
+| change the passphrase that opens one account | `awsv passwd NAME` |
+| give an account its own passphrase | `awsv set NAME --lock own` |
+| put it back on the shared passphrase | `awsv set NAME --lock shared` |
+| open the [default] account for a while | `awsv unlock 30m`, `awsv unlock 8h` |
+| open one account | `awsv unlock NAME 30m` |
+| open every account | `awsv unlock all 8h` |
+| close one account now | `awsv lock NAME` |
+| close everything now | `awsv lock` |
 | check that everything is right | `awsv status` |
 
 `NAME`, `SECTION` and `REGION` are yours to fill in: an account name such as
@@ -140,20 +187,23 @@ AWS checks the key before awsv stores it. The first account becomes `[default]`.
 ├── keys/             the keys, one encrypted file per account. The only secrets.
 │   ├── work.gpg
 │   └── client.gpg
-├── meta/             settings of each account: region, mode, account number. Not secret.
+├── meta/             settings of each account: region, mode, lock, account number. Not secret.
 │   ├── work
 │   └── client
+├── gnupg/            only for accounts with their own passphrase
+│   └── client/       the GPG key of client, its gpg-agent.conf and its unlocked-until
 ├── active            one word: the name of the [default] account
+├── lock              what a new account gets: shared or own
 ├── backup/           copies made before each change
-└── unlocked-until    when the current unlock window ends; awsv status reads it
+└── unlocked-until    when the window of the shared passphrase ends; awsv status reads it
 ```
 
 Outside this directory:
 
 | Path | What it is |
 |---|---|
-| `~/.gnupg/` | the GPG key that encrypts the vault, locked by your passphrase |
-| `~/.gnupg/gpg-agent.conf` | how long the passphrase stays in memory; `awsv unlock 30m` sets it |
+| `~/.gnupg/` | the GPG key of the shared passphrase |
+| `~/.gnupg/gpg-agent.conf` | how long the shared passphrase stays in memory; `awsv unlock 30m` sets it |
 | `~/.aws/config` | awsv writes a block between `# >>> awsv` and `# <<< awsv <<<`. The rest stays yours |
 | `~/.aws/credentials` | empty |
 | `$XDG_RUNTIME_DIR/awsv/` | cached one-hour sessions, in memory. A logout or a reboot deletes them |
@@ -161,6 +211,10 @@ Outside this directory:
 Each file in `keys/` holds two lines, `AccessKeyId=…` and `SecretAccessKey=…`,
 encrypted. The block in `~/.aws/config` has `[default]` and one
 `[profile NAME]` per account. Each of them calls `awsv creds NAME`.
+
+An account with its own passphrase has its own GPG directory, so gpg starts a
+separate gpg-agent for it. That is why its passphrase is remembered, forgotten
+and timed apart from the others.
 
 ## Things that are easy to miss
 
@@ -197,7 +251,7 @@ Each account has a mode. `awsv ls` shows it, `awsv set NAME --mode direct` or `-
 | what tools get | a one-hour session, key id starts with `ASIA` | the stored key, starts with `AKIA` |
 | a leaked credential | expires within an hour | works until revoked in IAM |
 | IAM API calls | refused: a session made without MFA cannot make them | work |
-| a run longer than an hour | renews itself, but needs the vault open at that moment | not affected |
+| a run longer than an hour | renews itself, but needs the account open at that moment | not affected |
 
 Use `direct` for an account that Terraform uses. Terraform often changes IAM
 roles and policies, and long runs are common. Use `session` for work by hand.
@@ -205,25 +259,27 @@ roles and policies, and long runs are common. Use `session` for work by hand.
 ### Long Terraform runs in session mode
 
 The session renews itself when it expires: the AWS SDK calls awsv again. That
-call needs the vault open. The passphrase stays in memory for the window you
+call needs the account open. The passphrase stays in memory for the window you
 chose, counted from the moment you typed it, whether you use it or not. A run
 that outlasts the window fails in the middle. Before a long run, either switch
-the account to `direct`, or open a window long enough for it: `awsv unlock 8h`.
+the account to `direct`, or open a window long enough for it:
+`awsv unlock NAME 8h`.
 
 ### When the passphrase is asked
 
-The first `aws` command after the vault locks asks for the passphrase in your
-terminal. After that it is quiet for the window you chose last time with
-`awsv unlock`; 8 hours if you never chose one.
+The first `aws` command in a locked account asks for the passphrase in your
+terminal: the shared one, or the account's own. After that it is quiet for the
+window you chose last time with `awsv unlock`; 8 hours if you never chose one.
+Each own passphrase has its own window.
 
 A command without a terminal cannot ask. It fails with
 `Error when retrieving credentials from custom-process`. This happens to cron
-jobs, scripts and AI assistants. Run `awsv unlock` in your own terminal, and
-they work again.
+jobs, scripts and AI assistants. The error names the account. Run
+`awsv unlock NAME` with that name in your own terminal, and they work again.
 
 ### After a reboot
 
-Nothing to do. The vault starts locked and the session cache is empty. The
+Nothing to do. Every account starts locked and the session cache is empty. The
 first `aws` command in a terminal asks for the passphrase.
 
 ### Seeing a stored key
@@ -237,7 +293,8 @@ a script or an assistant's shell it refuses, so the secret stays out of logs.
 The same without awsv:
 
 ```bash
-gpg --decrypt ~/.local/share/awsv/keys/work.gpg
+gpg --decrypt ~/.local/share/awsv/keys/work.gpg                                     # shared passphrase
+gpg --homedir ~/.local/share/awsv/gnupg/work --decrypt ~/.local/share/awsv/keys/work.gpg   # own passphrase
 ```
 
 Never ask an AI assistant to run either of them. Everything it runs stays in its
@@ -246,30 +303,40 @@ session history on disk, and the key would have to be revoked.
 ### Changing the passphrase
 
 ```bash
-awsv passwd
+awsv passwd              # the shared passphrase
+awsv passwd nexum        # the passphrase that opens nexum: its own, or the shared one
 ```
 
 It asks for the current passphrase, then the new one twice. The files in
-`keys/` do not change: the passphrase locks the GPG key, not each file.
+`keys/` do not change: a passphrase locks a GPG key, not each file.
 
 ### A forgotten passphrase
 
-Nothing opens the vault without it. The way back is a new key for every account:
+Nothing opens an account without its passphrase. The way back is a new key from
+IAM for every account that the passphrase opened.
+
+The shared passphrase:
 
 ```bash
-awsv rm work --yes                                     # for each account; needs no passphrase
+awsv rm work --yes                                     # for each shared account; needs no passphrase
 gpg --delete-secret-and-public-keys "awsv local vault"  # the old GPG key
 awsv init                                              # a new GPG key, a new passphrase
 awsv add work --region eu-central-1                    # with a new key from IAM
 ```
 
+The own passphrase of one account; the other accounts are not affected:
+
+```bash
+awsv rm nexum --yes                                    # deletes its GPG key too
+awsv add nexum --region us-east-2 --lock own           # a new key from IAM, a new passphrase
+```
+
 Then deactivate the old keys in IAM. A backup of the GPG key is not needed for
 this reason: a new IAM key is the recovery.
 
-### One passphrase for every account
+### How many accounts
 
-The number of accounts has no limit. Each one is a file in `keys/`, and all of
-them open with the same passphrase.
+The number of accounts has no limit. Each one is a file in `keys/`.
 
 ### Each user has their own vault
 
@@ -292,7 +359,10 @@ is complete and everything works.
 
 | You see | Why | What to do |
 |---|---|---|
-| `Error when retrieving credentials from custom-process: awsv: cannot open 'NAME'` | the vault is locked, and the command had no terminal | `awsv unlock` in your terminal |
+| `Error when retrieving credentials from custom-process: awsv: cannot open 'NAME'` | the account is locked, and the command had no terminal | `awsv unlock NAME` in your terminal |
+| `awsv unlock work` opened other accounts too | they are all on the shared passphrase | give the account its own: `awsv set NAME --lock own` |
+| `every account has its own passphrase — name one` | `awsv passwd` with no name, and there is no shared passphrase | `awsv passwd NAME` |
+| `lock is 'shared' or 'own'` | a typo after `--lock` | `--lock own` or `--lock shared` |
 | `STS refused a session for 'NAME'` | AWS does not accept the stored key | check the key in IAM; `awsv rekey NAME` |
 | `AccessDenied` on IAM calls, often from Terraform | the account is in session mode | `awsv set NAME --mode direct` |
 | a red `WARNING` in `awsv status` | a key is still in `~/.aws/credentials` | `awsv import SECTION` |

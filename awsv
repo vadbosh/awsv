@@ -43,6 +43,11 @@ BIN="$(readlink -f "$(command -v awsv 2>/dev/null || echo "$SELF")")"
 KEYS="$AWSV_HOME/keys"
 META="$AWSV_HOME/meta"
 BACKUP="$AWSV_HOME/backup"
+# An account with a passphrase of its own has a GPG home of its own here. A
+# separate home means a separate gpg-agent: its own cached passphrase, its own
+# unlock window, its own lock. Accounts on the shared passphrase use ~/.gnupg.
+LOCKS="$AWSV_HOME/gnupg"
+MAIN_GNUPG="${GNUPGHOME:-$HOME/.gnupg}"
 BEGIN="# >>> awsv: generated, do not edit between these two lines >>>"
 END="# <<< awsv <<<"
 
@@ -69,8 +74,9 @@ help_text() {
 cat <<'EOF'
 awsv keeps AWS access keys in an encrypted vault, not in ~/.aws/credentials.
 aws, Terraform and the SDKs get the keys through ~/.aws/config.
-You type one passphrase, and the vault stays open for as long as you choose:
-awsv unlock 30m, awsv unlock 8h. While it is open, see: awsv help show
+A passphrase opens it for as long as you choose: awsv unlock 30m, awsv unlock 8h.
+One passphrase for every account, or one for each: awsv help passphrase
+What an open vault does not protect: awsv help show
 
   awsv help COMMAND    one command and its example
   awsv help            this page
@@ -80,46 +86,56 @@ awsv unlock 30m, awsv unlock 8h. While it is open, see: awsv help show
 
 START HERE
     $ ./install.sh                        # in the awsv repository: check the parts, install
-    $ awsv init --take-default            # create the vault key and choose its passphrase
+    $ awsv init --take-default            # asks: one passphrase for all accounts, or one for each
     $ awsv import default --as work       # move the current [default] key into the vault
     $ awsv status                         # "no keys left" means done
 
+ONE PASSPHRASE, OR ONE PER ACCOUNT
+    $ awsv help passphrase                # how both work, and how to switch an account
+
 SEE A STORED KEY
   ! awsv show NAME
-  ! The same with gpg: gpg --decrypt ~/.local/share/awsv/keys/NAME.gpg
-  ! Both print the secret. Run them only in your own terminal.
+  ! It prints the secret, and so does gpg --decrypt: awsv help show has the exact line.
+  ! Run them only in your own terminal.
 
 COMMANDS
   init  add  import  ls  use  exec  set  rekey  rm  show  passwd  unlock  lock  status
 
 FILES
   ~/.local/share/awsv/keys/NAME.gpg   the key of one account, encrypted
-  ~/.local/share/awsv/meta/NAME       region, mode and account number; not secret
+  ~/.local/share/awsv/gnupg/NAME/     the GPG key of an account with its own passphrase
+  ~/.local/share/awsv/meta/NAME       region, mode, lock and account number; not secret
   ~/.local/share/awsv/active          the name of the [default] account
   ~/.local/share/awsv/backup/         copies made before each change
   ~/.aws/config                       awsv writes only between its two marker lines
   ~/.aws/credentials                  stays empty; do not put keys there
 
-@ init | create the vault key; run it once
-    $ awsv init                         # asks for a new passphrase, twice
+@ init | set up the vault; run it once
+    $ awsv init                         # asks: 1 one passphrase for all, 2 one per account
     $ awsv init --take-default          # the same, when ~/.aws/config has its own [default]
+    $ awsv init --lock own              # answer in advance: each new account gets its own
+    $ awsv init --lock shared           # answer in advance: one passphrase for all
+  On a vault that exists, --lock changes what new accounts get. Existing ones stay.
   Then open a new terminal: init adds GPG_TTY to ~/.bashrc.
 
 @ add | store a new account
     $ awsv add prod --region eu-central-1        # asks for the key id, then the secret (hidden)
+    $ awsv add prod --lock own                   # prod gets a passphrase of its own
     $ aws --profile prod sts get-caller-identity # check that it works
     $ awsv use prod                              # make it [default], if you want
   Type the key here. Do not put it into ~/.aws/credentials first.
   AWS checks the key before awsv stores it.
+  With a passphrase of its own, add asks you to choose it, twice.
 
 @ import | move a key from ~/.aws/credentials into the vault
     $ awsv import nexum                 # works for [nexum] and for a commented #[nexum]
     $ awsv import default --as work     # "default" is reserved, so give it a name
+    $ awsv import nexum --lock own      # nexum gets a passphrase of its own
     $ awsv status                       # repeat imports until "no keys left"
   The section leaves the file. An encrypted copy of the file goes to backup/.
 
 @ ls | list the accounts
-    $ awsv ls                           # * marks [default]; then mode, region, account
+    $ awsv ls                           # * marks [default]; then mode, lock, region, account
 
 @ use | change the [default] account
     $ awsv use nexum                    # plain "aws ..." now works as nexum
@@ -130,12 +146,15 @@ FILES
     $ awsv exec nexum -- terraform plan # [default] does not change
     $ aws --profile nexum s3 ls         # the same for aws alone
 
-@ set | change the region or the mode of an account
+@ set | change the region, the mode or the passphrase of an account
     $ awsv set nexum --region us-east-2
     $ awsv set work --mode direct       # tools get the key itself
     $ awsv set work --mode session      # tools get a one-hour session; the default
+    $ awsv set nexum --lock own         # nexum gets a passphrase of its own
+    $ awsv set nexum --lock shared      # nexum goes back to the shared passphrase
   Use direct for Terraform. A session made without MFA cannot call the IAM API.
-  A session also needs the vault open again when it expires during a long run.
+  A session also needs the account open again when it expires during a long run.
+  --lock asks for the current passphrase of the account, then for the new one.
 
 @ rekey | replace the key of an account
     $ awsv rekey work                   # type the new key from IAM; AWS checks it first
@@ -145,46 +164,77 @@ FILES
     $ awsv rm old                       # asks you to confirm
     $ awsv use work                     # when old was [default]
   Then deactivate the key in IAM. Removal from the vault does not revoke it.
+  An account with its own passphrase loses its GPG key too.
 
 @ show | see a stored key, and what the vault does not protect
   ! awsv show work
   !   prints the key id and the secret
-  !   the same with gpg: gpg --decrypt ~/.local/share/awsv/keys/work.gpg
-  It asks for the passphrase when the vault is locked.
+  !   the same with gpg, shared passphrase: gpg --decrypt ~/.local/share/awsv/keys/work.gpg
+  !   own passphrase: gpg --homedir ~/.local/share/awsv/gnupg/work --decrypt ~/.local/share/awsv/keys/work.gpg
+  It asks for the passphrase when the account is locked.
   It refuses in a pipe, a script or an assistant's shell, so the secret stays out of logs.
 
-  ! While the vault is open, nothing asks before a key is read.
+  ! While an account is open, nothing asks before its key is read.
   ! Any process of this user can run gpg --decrypt and get the key.
   ! This includes scripts and an AI assistant that runs as you.
 
   The vault protects                  The vault does not protect
-  the keys on disk                    the keys from processes of this user
-  backups and disk snapshots            while the vault is open
+  the keys on disk                    an open account's key from
+  backups and disk snapshots            processes of this user
   the keys from other users           the keys from a root session
   the keys after lock, the end of     a key someone printed while
-    the unlock window, or a reboot      the vault was open
+    the unlock window, or a reboot      the account was open
+  a locked account while another
+    one with its own passphrase is open
 
-@ passwd | change the passphrase
-    $ awsv passwd                       # the current passphrase, then the new one twice
-  The files in keys/ do not change. The passphrase locks the vault key, not each file.
+@ passwd | change a passphrase
+    $ awsv passwd                       # the shared one: the current passphrase, then the new one twice
+    $ awsv passwd nexum                 # the passphrase that opens nexum: its own, or the shared one
+  The files in keys/ do not change. A passphrase locks a GPG key, not each file.
 
-@ unlock | open the vault for a time you choose
-    $ awsv unlock 30m                   # a short job: the vault closes by itself in 30 minutes
+@ unlock | open for a time you choose
+    $ awsv unlock 30m                   # the passphrase of the [default] account, for 30 minutes
     $ awsv unlock 8h                    # a working day; also what plain "awsv unlock" does
+    $ awsv unlock nexum 30m             # the passphrase that opens nexum
+    $ awsv unlock all 8h                # every passphrase, one after another
     $ awsv unlock 1h30m                 # any mix of hours and minutes, up to 24h
-    $ awsv status                       # shows when it closes
+    $ awsv status                       # shows when each one closes
+  A shared passphrase opens every account on it at once.
   Running unlock again starts a new window; the old one ends at once.
   "Error when retrieving credentials from custom-process" means: run awsv unlock.
 
-@ lock | close the vault now
-    $ awsv lock                         # forget the passphrase, delete the cached sessions
+@ lock | close now
+    $ awsv lock                         # every passphrase, and every cached session
+    $ awsv lock nexum                   # only the passphrase that opens nexum
 
 @ status | check the state
     $ awsv status
-  VAULT: the GPG key, whether the vault is open, where sessions are kept,
-  and whether any key is still in ~/.aws/credentials.
+  VAULT: what new accounts get, the shared passphrase and whether it is open,
+  where sessions are kept, and whether any key is still in ~/.aws/credentials.
   ACCOUNTS: one block per account in the same shape. * marks [default].
+  "lock" says which passphrase opens the account. "state" says whether it is
+  open now, and gives the command that opens or closes it.
   Each block ends with the command that uses the account.
+
+@ passphrase | one passphrase for every account, or one for each
+  shared   one passphrase opens every account on it. You type it once.
+  own      the account has a passphrase of its own. It opens and closes alone.
+  init asks which one new accounts get. Each account can be switched later.
+
+  Give one account its own passphrase, keep the others shared:
+    $ awsv set nexum --lock own         # the current passphrase, then a new one for nexum
+    $ awsv unlock nexum 30m             # opens nexum only
+    $ awsv lock nexum                   # closes nexum only
+    $ awsv passwd nexum                 # changes the passphrase of nexum only
+    $ awsv set nexum --lock shared      # back to the shared passphrase
+  Every new account with its own passphrase:
+    $ awsv init --lock own              # accounts that exist keep their lock
+    $ awsv add prod --lock shared       # one account can still take the shared one
+  Open everything in the morning, close it in the evening:
+    $ awsv unlock all 8h                # asks each passphrase once
+    $ awsv lock                         # closes every passphrase
+  ! A shared passphrase opens every account on it: awsv unlock work 30m opens them all.
+  ! awsv status shows, for each account, which passphrase opens it and whether it is open.
 EOF
 }
 
@@ -233,6 +283,7 @@ valid_name() {
         || die "bad name '$1': use lowercase letters, digits, '-' and '_', up to 32"
     [ "$1" != default ] \
         || die "'default' is reserved: it is the account that 'awsv use NAME' selected"
+    [ "$1" != all ] || die "'all' is reserved: 'awsv unlock all' opens every account"
 }
 valid_region() { [[ "$1" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "bad region '$1'"; }
 valid_mode()   { [ "$1" = session ] || [ "$1" = direct ] || die "mode is 'session' or 'direct', not '$1'"; }
@@ -245,16 +296,98 @@ need_tty() {
     GPG_TTY="$(tty)"; export GPG_TTY
 }
 
-fpr() {
-    gpg --list-secret-keys --with-colons -- "$GPG_UID" 2>/dev/null \
+meta_get() { sed -n "s/^$2=//p" "$META/$1" 2>/dev/null | head -1; }
+
+# ------------------------------------------------------------ the locks
+#
+# A lock is a GPG key and its passphrase. "shared": the vault key in ~/.gnupg,
+# one passphrase for every account that uses it. "own": a key of one account
+# in $LOCKS/NAME, with its own gpg-agent. Each helper takes the GPG home; an
+# empty home means ~/.gnupg.
+
+valid_lock() { [ "$1" = shared ] || [ "$1" = own ] || die "lock is 'shared' or 'own', not '$1'"; }
+lock_of()  { if [ "$(meta_get "$1" lock)" = own ]; then echo own; else echo shared; fi; }
+home_for() { [ "$2" = own ] && printf '%s\n' "$LOCKS/$1"; return 0; }   # NAME LOCK
+uid_for()  { if [ "$2" = own ]; then printf 'awsv-%s\n' "$1"; else printf '%s\n' "$GPG_UID"; fi; }
+home_of()  { home_for "$1" "$(lock_of "$1")"; }
+uid_of()   { uid_for "$1" "$(lock_of "$1")"; }
+default_lock() { if [ "$(cat "$AWSV_HOME/lock" 2>/dev/null)" = own ]; then echo own; else echo shared; fi; }
+
+g() {   # HOME gpg-arguments — gpg in that GPG home
+    local h="$1"; shift
+    if [ -n "$h" ]; then gpg --homedir "$h" "$@"; else gpg "$@"; fi
+}
+fpr() {   # [HOME UID] — no arguments: the shared vault key
+    g "${1:-}" --list-secret-keys --with-colons -- "${2:-$GPG_UID}" 2>/dev/null \
         | awk -F: '/^fpr:/ {print $10; exit}'
 }
-grip() {   # keygrip of the encryption subkey: what gpg-agent caches
-    gpg --list-secret-keys --with-colons --with-keygrip -- "$GPG_UID" 2>/dev/null \
+grip() {   # [HOME UID] — keygrip of the encryption subkey: what gpg-agent caches
+    g "${1:-}" --list-secret-keys --with-colons --with-keygrip -- "${2:-$GPG_UID}" 2>/dev/null \
         | awk -F: '/^ssb:/ {s=1} s && /^grp:/ {print $10; exit}'
 }
+conf_of()  { printf '%s/gpg-agent.conf\n' "${1:-$MAIN_GNUPG}"; }
+until_of() { printf '%s/unlocked-until\n' "${1:-$AWSV_HOME}"; }
+initialized() { [ -n "$(fpr)" ] || [ -f "$AWSV_HOME/lock" ]; }
 
-meta_get() { sed -n "s/^$2=//p" "$META/$1" 2>/dev/null | head -1; }
+# Make gpg-agent forget the passphrase. The shared agent in ~/.gnupg is
+# reloaded: it may serve other keys of this user. An account's own agent
+# serves that account only, so it is stopped; the next gpg call starts it again.
+forget() {   # HOME
+    if [ -n "$1" ]; then gpgconf --homedir "$1" --kill gpg-agent 2>/dev/null
+    else gpgconf --reload gpg-agent; fi
+    return 0
+}
+
+cached() {   # HOME UID — is the passphrase in gpg-agent's memory now
+    local gr a=(gpg-connect-agent --no-autostart)
+    gr="$(grip "$1" "$2")"; [ -n "$gr" ] || return 1
+    [ -n "$1" ] && a+=(--homedir "$1")
+    [ "$("${a[@]}" "keyinfo $gr" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')" = 1 ]
+}
+
+names() {   # every account; with an argument, only the accounts on that lock
+    local f n
+    for f in "$KEYS"/*.gpg; do
+        [ -e "$f" ] || continue
+        n="$(basename "$f" .gpg)"
+        [ -z "${1:-}" ] || [ "$(lock_of "$n")" = "$1" ] && printf '%s\n' "$n"
+    done
+}
+joined() { tr '\n' ' ' | sed 's/ $//; s/ /, /g'; }
+
+# What one lock opens, in words: "wl, x — the shared passphrase" or "nexum only".
+scope_of() {   # NAME
+    if [ "$(lock_of "$1")" = own ]; then printf '%s only, with its own passphrase\n' "$1"
+    else printf '%s — every account on the shared passphrase\n' "$(names shared | joined)"; fi
+}
+
+make_shared_key() {
+    [ -n "$(fpr)" ] && return 0
+    [ -t 0 ] && { GPG_TTY="$(tty)"; export GPG_TTY; }
+    say "Creating the GPG key for the shared passphrase."
+    say "${Y}${B}Choose the shared passphrase now.${N} ${B}It opens every account that uses it.${N}"
+    gpg --quick-generate-key "$GPG_UID" future-default default never >/dev/null \
+        || die "the key was not created — gpg asks for the passphrase in a terminal"
+}
+
+# The key of one account, in a GPG home of its own. Its gpg-agent takes the
+# unlock window and the pinentry program from the shared one.
+make_own_key() {   # NAME
+    local h="$LOCKS/$1" pin ttl
+    [ -n "$(fpr "$h" "awsv-$1")" ] && return 0
+    mkdir -p "$h"; chmod 700 "$LOCKS" "$h"
+    ttl="$(agent_ttl "")"; ttl="${ttl:-28800}"
+    pin="$(sed -n 's/^pinentry-program[[:space:]]*//p' "$(conf_of "")" 2>/dev/null | head -1)"
+    {
+        printf '# awsv: how long the passphrase of %s stays in memory; awsv unlock %s sets it\n' "$1" "$1"
+        printf 'default-cache-ttl %s\nmax-cache-ttl %s\n' "$ttl" "$ttl"
+        [ -z "$pin" ] || printf 'pinentry-program %s\n' "$pin"
+    } > "$(conf_of "$h")"
+    [ -t 0 ] && { GPG_TTY="$(tty)"; export GPG_TTY; }
+    say "${Y}${B}Choose the passphrase of $1 now.${N} ${B}It opens $1 only.${N}"
+    g "$h" --quick-generate-key "awsv-$1" future-default default never >/dev/null \
+        || die "the key of $1 was not created — gpg asks for the passphrase in a terminal"
+}
 meta_set() {
     local f="$META/$1"
     mkdir -p "$META"; touch "$f"
@@ -264,13 +397,15 @@ meta_set() {
 
 # --------------------------------------------------------- the vault itself
 
-encrypt_key() {   # NAME — AKID and SECRET are set
-    local f; f="$(fpr)"
-    [ -n "$f" ] || die "no GPG key yet — run 'awsv init' first"
+encrypt_key() {   # NAME LOCK — AKID and SECRET are set; creates the key of the lock if needed
+    local h u f
+    if [ "$2" = own ]; then make_own_key "$1"; else make_shared_key; fi
+    h="$(home_for "$1" "$2")"; u="$(uid_for "$1" "$2")"; f="$(fpr "$h" "$u")"
+    [ -n "$f" ] || die "no GPG key for $1"
     mkdir -p "$KEYS"
     # printf is a shell builtin: the secret never appears in a process argument list.
     printf 'AccessKeyId=%s\nSecretAccessKey=%s\n' "$AKID" "$SECRET" \
-        | gpg --quiet --yes --trust-model always --encrypt --recipient "$f" \
+        | g "$h" --quiet --yes --trust-model always --encrypt --recipient "$f" \
               --output "$KEYS/$1.gpg.tmp" \
         || die "encryption failed"
     mv -f "$KEYS/$1.gpg.tmp" "$KEYS/$1.gpg"
@@ -279,9 +414,9 @@ encrypt_key() {   # NAME — AKID and SECRET are set
 decrypt_key() {   # NAME — sets AKID and SECRET
     local out errf why
     errf="$(mktemp)"
-    if ! out="$(gpg --quiet --decrypt "$KEYS/$1.gpg" 2>"$errf" </dev/null)"; then
+    if ! out="$(g "$(home_of "$1")" --quiet --decrypt "$KEYS/$1.gpg" 2>"$errf" </dev/null)"; then
         why="$(grep -m1 -v '^gpg: encrypted with' "$errf")"; rm -f "$errf"
-        die "cannot open '$1' — ${why:-gpg failed}. If the vault is locked, run 'awsv unlock' in a terminal."
+        die "cannot open '$1' — ${why:-gpg failed}. If it is locked, open it in your terminal: awsv unlock $1"
     fi
     rm -f "$errf"
     AKID="$(printf '%s\n' "$out" | sed -n 's/^AccessKeyId=//p')"
@@ -438,10 +573,10 @@ read_section() {
         END { print "FOUND=" found+0 }' "$CREDS"
 }
 
-drop_section() {   # remove [s] or #[s] with its lines; keep an encrypted backup first
-    local f; f="$(fpr)"
+drop_section() {   # SECTION NAME — remove [s] or #[s]; first an encrypted backup, to NAME's lock
+    local h f; h="$(home_of "$2")"; f="$(fpr "$h" "$(uid_of "$2")")"
     mkdir -p "$BACKUP"
-    gpg --quiet --yes --trust-model always --encrypt --recipient "$f" \
+    g "$h" --quiet --yes --trust-model always --encrypt --recipient "$f" \
         --output "$BACKUP/credentials.$(date +%s%N).gpg" "$CREDS" \
         || die "could not back up the credentials file; nothing was removed"
     awk -v s="$1" '
@@ -461,12 +596,13 @@ plain_sections() {   # names of the sections that still hold a key in plain text
 
 # ------------------------------------------------------------- the commands
 
-parse_opts() {   # sets REGION MODE VERIFY STDIN AS KEEP YES from the remaining arguments
-    REGION=""; MODE=""; VERIFY=1; STDIN=0; AS=""; KEEP=0; YES=0
+parse_opts() {   # sets REGION MODE LOCK VERIFY STDIN AS KEEP YES from the remaining arguments
+    REGION=""; MODE=""; LOCK=""; VERIFY=1; STDIN=0; AS=""; KEEP=0; YES=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --region)    REGION="${2:-}"; shift ;;
             --mode)      MODE="${2:-}"; shift ;;
+            --lock)      LOCK="${2:-}"; shift ;;
             --no-verify) VERIFY=0 ;;
             --stdin)     STDIN=1 ;;
             --as)        AS="${2:-}"; shift ;;
@@ -478,6 +614,7 @@ parse_opts() {   # sets REGION MODE VERIFY STDIN AS KEEP YES from the remaining 
     done
     [ -z "$REGION" ] || valid_region "$REGION"
     [ -z "$MODE" ] || valid_mode "$MODE"
+    [ -z "$LOCK" ] || valid_lock "$LOCK"
 }
 
 read_key() {   # sets AKID SECRET from the terminal or from stdin
@@ -492,17 +629,18 @@ read_key() {   # sets AKID SECRET from the terminal or from stdin
     [ -n "$SECRET" ] || die "empty secret"
 }
 
-store() {   # NAME REGION MODE — AKID and SECRET are set
-    local name="$1" region="$2" mode="$3" id=""
+store() {   # NAME REGION MODE LOCK — AKID and SECRET are set
+    local name="$1" region="$2" mode="$3" lock="$4" id=""
     if [ "$VERIFY" = 1 ]; then
         id="$(aws_with "$AKID" "$SECRET" "" sts get-caller-identity --region "$region" \
                 --query '[Account,Arn]' --output text 2>&1)" \
             || die "AWS rejected the key: $(printf '%s' "$id" | grep -v '^$' | tail -1)"
     fi
-    encrypt_key "$name"
+    encrypt_key "$name" "$lock"
     : > "$META/$name" 2>/dev/null || { mkdir -p "$META"; : > "$META/$name"; }
     meta_set "$name" region "$region"
     meta_set "$name" mode "$mode"
+    meta_set "$name" lock "$lock"
     meta_set "$name" added "$(date -Is)"
     if [ -n "$id" ]; then
         meta_set "$name" account "$(printf '%s' "$id" | awk '{print $1}')"
@@ -512,23 +650,47 @@ store() {   # NAME REGION MODE — AKID and SECRET are set
     drop_cache "$name"
     write_config
     ok "stored $name — $mode mode, $region${id:+, $(meta_get "$name" arn)}"
+    if [ "$lock" = own ]; then say "  locked by its own passphrase: open it with awsv unlock $name"
+    else say "  locked by the shared passphrase, with: $(names shared | joined)"; fi
     [ "$(active)" = "$name" ] && say "  ${B}it is the [default] profile now${N}"
     [ "$mode" = session ] && warn "  session mode: an STS session made without MFA cannot call the IAM API. If a tool needs it: awsv set $name --mode direct"
     return 0
 }
 
+# Ask how new accounts are locked. Only on a first run in a terminal: a vault
+# that exists keeps its choice, and 'awsv init --lock own' changes it.
+ask_lock() {
+    local a
+    say "${B}How should the vault lock your accounts?${N}"
+    say "  ${C}1${N}  one passphrase for every account  ${D}— type it once a day, every account opens${N}"
+    say "  ${C}2${N}  a passphrase for each account     ${D}— each account opens and locks on its own${N}"
+    say "  ${D}You can change it later for one account: awsv set NAME --lock own (or shared)${N}"
+    read -rp "Choose 1 or 2 [1]: " a
+    case "${a:-1}" in 1) LOCK=shared ;; 2) LOCK=own ;; *) die "answer 1 or 2" ;; esac
+}
+
 cmd_init() {
     local take=0 conf ttl
-    [ "${1:-}" = --take-default ] && take=1
-    mkdir -p "$KEYS" "$META" "$BACKUP"; chmod 700 "$AWSV_HOME"
-    if [ -z "$(fpr)" ]; then
-        need_tty "creating the GPG key"
-        say "Creating the GPG key that will encrypt the vault."
-        say "${Y}${B}Choose its passphrase now.${N} ${B}It is the one password for every account in the vault.${N}"
-        gpg --quick-generate-key "$GPG_UID" future-default default never >/dev/null \
-            || die "the key was not created"
+    LOCK=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --take-default) take=1 ;;
+            --lock) LOCK="${2:-}"; shift; valid_lock "$LOCK" ;;
+            *) die "unknown option '$1' (try --help)" ;;
+        esac
+        shift
+    done
+    if [ -z "$LOCK" ]; then
+        if [ -f "$AWSV_HOME/lock" ] || [ -n "$(fpr)" ] || ! { [ -t 0 ] && [ -t 1 ]; }; then
+            LOCK="$(default_lock)"
+        else
+            ask_lock
+        fi
     fi
-    conf="${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf"
+    mkdir -p "$KEYS" "$META" "$BACKUP"; chmod 700 "$AWSV_HOME"
+    printf '%s\n' "$LOCK" > "$AWSV_HOME/lock"
+    [ "$LOCK" = shared ] && make_shared_key
+    conf="$(conf_of "")"
     if ! grep -q '^default-cache-ttl' "$conf" 2>/dev/null; then
         [ -f "$conf" ] && cp -p "$conf" "$BACKUP/gpg-agent.conf.$(date +%s)"
         {
@@ -545,28 +707,33 @@ cmd_init() {
         warn "added 'export GPG_TTY=\$(tty)' to ~/.bashrc — open a new terminal, or run that line once here"
     fi
     [ "$take" = 1 ] && take_default && warn "commented out [default] in ~/.aws/config (backup in $BACKUP)"
-    ttl="$(sed -n 's/^max-cache-ttl[[:space:]]*//p' "$conf" | head -1)"
-    ok "ready: GPG key $(fpr | tail -c 17), passphrase kept for $((ttl / 3600)) h after it is typed"
+    ttl="$(agent_ttl "")"
+    if [ "$LOCK" = own ]; then
+        ok "ready: each new account gets a passphrase of its own; you choose it when you add the account: awsv add NAME"
+    else
+        ok "ready: one passphrase for every new account, GPG key $(fpr | tail -c 17)"
+    fi
+    say "  a passphrase stays in memory for $(human "${ttl:-28800}") after it is typed; choose another time: awsv unlock 30m"
 }
 
 cmd_add() {
-    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv add NAME [--region R] [--mode M]"
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv add NAME [--region R] [--mode M] [--lock shared|own]"
     shift; valid_name "$name"; parse_opts "$@"
     exists "$name" && die "'$name' is in the vault already — to replace its key: awsv rekey $name"
-    [ -n "$(fpr)" ] || die "no GPG key yet — run 'awsv init' first"
+    initialized || die "the vault is not set up yet — run 'awsv init' first"
     check_config
     read_key
-    store "$name" "${REGION:-us-east-1}" "${MODE:-session}"
+    store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "${LOCK:-$(default_lock)}"
 }
 
 cmd_import() {
     local sec="${1:-}" name vals FOUND=0 TOKEN=""
-    [ -n "$sec" ] || die "usage: awsv import SECTION [--as NAME] [--keep] [--region R] [--mode M]"
+    [ -n "$sec" ] || die "usage: awsv import SECTION [--as NAME] [--keep] [--region R] [--mode M] [--lock shared|own]"
     shift; parse_opts "$@"
     name="${AS:-$sec}"; valid_name "$name"
     [ -f "$CREDS" ] || die "no $CREDS"
     exists "$name" && die "'$name' is in the vault already"
-    [ -n "$(fpr)" ] || die "no GPG key yet — run 'awsv init' first"
+    initialized || die "the vault is not set up yet — run 'awsv init' first"
     vals="$(read_section "$sec")"
     AKID="$(printf '%s\n' "$vals" | sed -n 's/^AKID=//p')"
     SECRET="$(printf '%s\n' "$vals" | sed -n 's/^SECRET=//p')"
@@ -578,24 +745,23 @@ cmd_import() {
     [ -n "$AKID" ] && [ -n "$SECRET" ] || die "[$sec] has no aws_access_key_id / aws_secret_access_key"
     # The check runs before the key is stored, so a failure leaves both files as they were.
     check_config
-    store "$name" "${REGION:-us-east-1}" "${MODE:-session}"
+    store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "${LOCK:-$(default_lock)}"
     if [ "$KEEP" = 0 ]; then
-        drop_section "$sec"
+        drop_section "$sec" "$name"
         ok "  removed [$sec] from $CREDS (encrypted backup in $BACKUP)"
     fi
 }
 
 cmd_ls() {
-    local f n act any=0
+    local n act any=0
     act="$(active)"
-    printf '%s%-14s %-7s %-8s %-12s %-14s %s%s\n' "$B" NAME DEFAULT MODE REGION ACCOUNT ARN "$N"
-    for f in "$KEYS"/*.gpg; do
-        [ -e "$f" ] || continue; any=1
-        n="$(basename "$f" .gpg)"
+    printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$B" NAME DEFAULT MODE LOCK REGION ACCOUNT ARN "$N"
+    for n in $(names); do
+        any=1
         # the whole row in one colour: escape codes inside a padded column break the alignment
-        printf '%s%-14s %-7s %-8s %-12s %-14s %s%s\n' "$([ "$n" = "$act" ] && printf '%s' "$G$B")" \
+        printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$([ "$n" = "$act" ] && printf '%s' "$G$B")" \
             "$n" "$([ "$n" = "$act" ] && echo '*')" \
-            "$(meta_get "$n" mode)" "$(meta_get "$n" region)" \
+            "$(meta_get "$n" mode)" "$(lock_of "$n")" "$(meta_get "$n" region)" \
             "$(meta_get "$n" account)" "$(meta_get "$n" arn)" "$N"
     done
     [ "$any" = 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
@@ -609,34 +775,66 @@ cmd_use() {
     ok "[default] is $name now — $(meta_get "$name" arn)"
 }
 
+# Delete the GPG home of an account that no longer has its own passphrase.
+# Only a directory under $LOCKS named after a valid account name qualifies.
+drop_home() {   # NAME
+    local h="$LOCKS/$1"
+    valid_name "$1"
+    [ -d "$h" ] || return 0
+    forget "$h"
+    rm -r -f -- "$h"
+}
+
+# Moving an account to another lock re-encrypts its file: the old passphrase
+# opens it, the new key takes it. An own key the account no longer uses is
+# deleted with its GPG home.
+relock() {   # NAME LOCK
+    local name="$1" old
+    old="$(lock_of "$name")"
+    if [ "$2" = "$old" ]; then say "$name is on the $2 lock already"; return 0; fi
+    [ -t 0 ] && { GPG_TTY="$(tty)"; export GPG_TTY; }
+    say "Opening $name with its current passphrase."
+    decrypt_key "$name"
+    encrypt_key "$name" "$2"
+    meta_set "$name" lock "$2"
+    unset AKID SECRET
+    [ "$old" = own ] && drop_home "$name"
+    drop_cache "$name"
+    if [ "$2" = own ]; then ok "$name has its own passphrase now — open it with: awsv unlock $name"
+    else ok "$name is on the shared passphrase now, with: $(names shared | joined)"; fi
+}
+
 cmd_set() {
-    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv set NAME [--region R] [--mode M]"
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv set NAME [--region R] [--mode M] [--lock shared|own]"
     shift; need "$name"; parse_opts "$@"
-    [ -n "$REGION$MODE" ] || die "nothing to change: give --region or --mode"
+    [ -n "$REGION$MODE$LOCK" ] || die "nothing to change: give --region, --mode or --lock"
+    [ -z "$LOCK" ] || relock "$name" "$LOCK"
     [ -z "$REGION" ] || meta_set "$name" region "$REGION"
     [ -z "$MODE" ] || meta_set "$name" mode "$MODE"
     drop_cache "$name"
     write_config
-    ok "$name: $(meta_get "$name" mode) mode, $(meta_get "$name" region)"
+    ok "$name: $(meta_get "$name" mode) mode, $(meta_get "$name" region), $(lock_of "$name") lock"
 }
 
 cmd_rekey() {
     local name="${1:-}"; [ -n "$name" ] || die "usage: awsv rekey NAME"
     shift; need "$name"; parse_opts "$@"
     read_key
-    store "$name" "$(meta_get "$name" region)" "$(meta_get "$name" mode)"
+    store "$name" "$(meta_get "$name" region)" "$(meta_get "$name" mode)" "$(lock_of "$name")"
     warn "  the old key is still valid in AWS until you deactivate it in IAM"
 }
 
 cmd_rm() {
-    local name="${1:-}" a; [ -n "$name" ] || die "usage: awsv rm NAME [--yes]"
+    local name="${1:-}" a lock; [ -n "$name" ] || die "usage: awsv rm NAME [--yes]"
     shift; need "$name"; parse_opts "$@"
     if [ "$YES" = 0 ]; then
         need_tty "a confirmation (or pass --yes)"
         read -rp "${R}${B}Delete $name${N} ($(meta_get "$name" arn)) from the vault? [y/N] " a
         [ "$a" = y ] || [ "$a" = Y ] || die "nothing deleted"
     fi
+    lock="$(lock_of "$name")"
     rm -f "$KEYS/$name.gpg" "$META/$name"
+    [ "$lock" = own ] && drop_home "$name"     # its own GPG key opens nothing else
     drop_cache "$name"
     [ "$(active)" = "$name" ] && : > "$AWSV_HOME/active"
     write_config
@@ -688,42 +886,82 @@ parse_duration() {
 
 # How long gpg-agent keeps the passphrase. Both values the same: the window is
 # fixed from the moment the passphrase is typed, however often it is used.
-set_agent_ttl() {
-    local conf="${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf" k
+set_agent_ttl() {   # HOME SECONDS
+    local conf k
+    conf="$(conf_of "$1")"
     for k in default-cache-ttl max-cache-ttl; do
-        if grep -q "^$k" "$conf" 2>/dev/null; then sed -i "s/^$k .*/$k $1/" "$conf"
-        else printf '%s %s\n' "$k" "$1" >> "$conf"; fi
+        if grep -q "^$k" "$conf" 2>/dev/null; then sed -i "s/^$k .*/$k $2/" "$conf"
+        else printf '%s %s\n' "$k" "$2" >> "$conf"; fi
     done
 }
-agent_ttl() { sed -n 's/^max-cache-ttl[[:space:]]*//p' "${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf" 2>/dev/null | head -1; }
+agent_ttl() { sed -n 's/^max-cache-ttl[[:space:]]*//p' "$(conf_of "${1:-}")" 2>/dev/null | head -1; }
 
 human() {   # seconds → "8h", "30m", "1h30m"
     local h=$(( $1 / 3600 )) m=$(( $1 % 3600 / 60 ))
     printf '%s%s\n' "$([ "$h" -gt 0 ] && printf '%dh' "$h")" "$([ "$m" -gt 0 ] && printf '%dm' "$m")"
 }
 
-cmd_unlock() {
-    local dur="${1:-8h}" secs f until
-    secs="$(parse_duration "$dur")" \
-        || die "bad duration '$dur': use minutes and hours, such as 30m, 8h or 1h30m; at most 24h"
-    need_tty "unlock"
-    for f in "$KEYS"/*.gpg; do [ -e "$f" ] && break; done
-    [ -e "${f:-}" ] || die "the vault is empty — nothing to unlock"
-    set_agent_ttl "$secs"
-    gpgconf --reload gpg-agent                    # forget the old window, read the new one
-    gpg --quiet --decrypt "$f" >/dev/null || die "not unlocked"
-    until=$(( $(date +%s) + secs ))
-    printf '%s\n' "$until" > "$AWSV_HOME/unlocked-until"
-    ok "unlocked for $(human "$secs"), until $(date -d "@$until" '+%H:%M %Z')"
-    say "  Until then every process of this user can read the keys without a question: awsv help show"
-    say "  Close it earlier: awsv lock"
+# Open the lock of one account: the shared passphrase, or the account's own.
+open_lock() {   # NAME SECONDS
+    local h until
+    h="$(home_of "$1")"
+    set_agent_ttl "$h" "$2"
+    forget "$h"                                   # forget the old window, read the new one
+    if [ "$(lock_of "$1")" = own ]; then say "${B}The passphrase of $1:${N}"
+    else say "${B}The shared passphrase:${N}"; fi
+    g "$h" --quiet --decrypt "$KEYS/$1.gpg" >/dev/null || die "not unlocked: $1"
+    until=$(( $(date +%s) + $2 ))
+    printf '%s\n' "$until" > "$(until_of "$h")"
+    ok "unlocked for $(human "$2"), until $(date -d "@$until" '+%H:%M %Z') — $(scope_of "$1")"
 }
 
-cmd_lock() {
-    gpgconf --reload gpg-agent
-    rm -f "$AWSV_HOME/unlocked-until"
+cmd_unlock() {   # [NAME | all] [DURATION], in either order
+    local target="" dur="" a secs n shared_done=0
+    for a in "$@"; do
+        if [ -z "$target" ] && { [ "$a" = all ] || exists "$a"; }; then target="$a"
+        elif [ -z "$dur" ]; then dur="$a"
+        else die "usage: awsv unlock [NAME|all] [DURATION]"; fi
+    done
+    dur="${dur:-8h}"
+    secs="$(parse_duration "$dur")" \
+        || die "bad duration '$dur': use minutes and hours, such as 30m, 8h or 1h30m; at most 24h. An account name is also accepted — see awsv ls"
+    [ -n "$(names)" ] || die "the vault is empty — nothing to unlock"
+    if [ -z "$target" ]; then                    # the account plain "aws" uses
+        target="$(active)"; exists "$target" || target="$(names | head -1)"
+    fi
+    need_tty "unlock"
+    if [ "$target" = all ]; then                 # each passphrase once: the shared one, then every own one
+        for n in $(names); do
+            if [ "$(lock_of "$n")" = shared ]; then
+                [ "$shared_done" = 1 ] && continue
+                shared_done=1
+            fi
+            open_lock "$n" "$secs"
+        done
+    else
+        open_lock "$target" "$secs"
+    fi
+    say "  Until then every process of this user can read those keys without a question: awsv help show"
+    say "  Close earlier: awsv lock closes everything, awsv lock NAME closes one passphrase"
+}
+
+cmd_lock() {   # [NAME]
+    local n h
+    if [ -n "${1:-}" ]; then
+        need "$1"
+        h="$(home_of "$1")"
+        forget "$h"; rm -f "$(until_of "$h")"
+        if [ "$(lock_of "$1")" = own ]; then drop_cache "$1"
+        else for n in $(names shared); do drop_cache "$n"; done; fi
+        ok "locked: $(scope_of "$1")"
+        return 0
+    fi
+    forget ""; rm -f "$(until_of "")"
+    for n in $(names own); do
+        h="$(home_of "$n")"; forget "$h"; rm -f "$(until_of "$h")"
+    done
     drop_cache
-    ok "locked: the agent forgot the passphrase and every cached session is deleted"
+    ok "locked: every passphrase is forgotten and every cached session is deleted"
 }
 
 # Print a stored key. Only when both stdin and stdout are a terminal: a pipe, a
@@ -740,46 +978,80 @@ cmd_show() {
     say "aws_secret_access_key = $SECRET"
 }
 
-# The passphrase protects the GPG key, not each file in keys/: changing it
-# re-encrypts nothing, and every account keeps working.
-cmd_passwd() {
-    local f
+# The passphrase protects a GPG key, not each file in keys/: changing it
+# re-encrypts nothing, and every account on that key keeps working.
+cmd_passwd() {   # [NAME]
+    local name="${1:-}" h u f
     need_tty "changing the passphrase"
-    f="$(fpr)"; [ -n "$f" ] || die "no GPG key yet — run 'awsv init' first"
+    if [ -n "$name" ]; then
+        need "$name"; h="$(home_of "$name")"; u="$(uid_of "$name")"
+    elif [ -n "$(fpr)" ]; then
+        h=""; u="$GPG_UID"
+    else
+        die "every account has its own passphrase — name one: awsv passwd NAME"
+    fi
+    f="$(fpr "$h" "$u")"; [ -n "$f" ] || die "no GPG key yet — run 'awsv init' first"
+    if [ -n "$h" ]; then say "This changes the passphrase of ${B}$name${N} only."
+    else say "This changes the shared passphrase, for: ${B}$(names shared | joined)${N}"; fi
     say "gpg asks for the current passphrase, then for the new one twice."
-    gpg --change-passphrase "$f" || die "the passphrase was not changed"
-    gpgconf --reload gpg-agent
+    g "$h" --change-passphrase "$f" || die "the passphrase was not changed"
+    forget "$h"
     ok "passphrase changed — the next use asks for the new one"
+}
+
+lock_state() {   # HOME UID — sets LST (UNLOCKED or LOCKED) and LTXT, the coloured state
+    local u now t
+    now="$(date +%s)"
+    u="$(cat "$(until_of "$1")" 2>/dev/null || echo 0)"
+    if cached "$1" "$2"; then
+        LST=UNLOCKED
+        if [ "$u" -gt "$now" ]; then
+            LTXT="${G}${B}UNLOCKED${N} until $(date -d "@$u" '+%H:%M %Z'), ${YG}${YG:+ }$(( (u - now) / 60 )) min left${YG:+ }${N}"
+        else
+            t="$(agent_ttl "$1")"
+            LTXT="${G}${B}UNLOCKED${N} for up to $(human "${t:-28800}") from when the passphrase was typed"
+        fi
+    else
+        LST=LOCKED; LTXT="${Y}${B}LOCKED${N}"
+    fi
 }
 
 # One block for the vault, then one block per account, all in the same shape.
 # Every line says what it means, not only a value.
 cmd_status() {
-    local act g st f n mode exp_s left now cache acct arn plain line vstate=NOT-SET-UP
+    local act n mode exp_s left now cache acct arn plain line shared first h
     act="$(active)"; now="$(date +%s)"
+    shared="$(names shared | joined)"
 
     say "${B}VAULT${N}       $AWSV_HOME"
     # The state first and on its own line: open or closed is the one thing to
     # see at a glance. What it means goes on the line below.
-    if [ -z "$(fpr)" ]; then
+    if ! initialized; then
         say "  state     ${Y}${B}NOT SET UP${N}"
         say "            there is no GPG key yet — create it: awsv init"
     else
-        g="$(grip)"
-        st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
-        local u; u="$(cat "$AWSV_HOME/unlocked-until" 2>/dev/null || echo 0)"
-        [ "$st" = 1 ] && vstate=UNLOCKED || vstate=LOCKED
-        if [ "$st" = 1 ] && [ "$u" -gt "$now" ]; then
-            say "  state     ${G}${B}UNLOCKED${N} until $(date -d "@$u" '+%H:%M %Z'), ${YG}${YG:+ }$(( (u - now) / 60 )) min left${YG:+ }${N}"
-            say "            any process of this user can read the keys now — close it: awsv lock"
-        elif [ "$st" = 1 ]; then
-            say "  state     ${G}${B}UNLOCKED${N} for up to $(human "$(agent_ttl)") from when the passphrase was typed"
-            say "            any process of this user can read the keys now — close it: awsv lock"
+        if [ "$(default_lock)" = own ]; then
+            say "  new       a new account gets a passphrase of its own   ${D}— switch: awsv init --lock shared${N}"
         else
-            say "  state     ${Y}${B}LOCKED${N}"
-            say "            the next aws command asks for the passphrase — open it: awsv unlock 30m"
+            say "  new       a new account gets the shared passphrase   ${D}— switch: awsv init --lock own${N}"
         fi
-        say "  GPG key   $(fpr | tail -c 17) in ~/.gnupg — encrypts every file in keys/. Change its passphrase with: awsv passwd"
+        if [ -n "$shared" ]; then
+            first="$(names shared | head -1)"
+            { [ -n "$act" ] && [ "$(lock_of "$act")" = shared ] && exists "$act"; } && first="$act"
+            lock_state "" "$GPG_UID"
+            say "  state     $LTXT   ${D}(the shared passphrase)${N}"
+            if [ "$LST" = UNLOCKED ]; then
+                say "            any process of this user can read the keys of $shared now — close it: awsv lock"
+            else
+                say "            the next aws command asks for the passphrase — open it: awsv unlock $first 30m"
+            fi
+            say "  GPG key   $(fpr | tail -c 17) in ~/.gnupg — the shared passphrase, for: $shared. Change it: awsv passwd"
+        elif [ -n "$(fpr)" ]; then
+            say "  shared    GPG key $(fpr | tail -c 17) in ~/.gnupg — no account uses the shared passphrase now"
+        fi
+        if [ -n "$(names own)" ]; then
+            say "  own       $(names own | joined) — each has a passphrase of its own; its state is in its block below"
+        fi
     fi
     if [ -n "$AWSV_RUN" ]; then
         say "  sessions  $AWSV_RUN — one-hour sessions, in memory; a reboot deletes them"
@@ -794,26 +1066,32 @@ cmd_status() {
         say "  plain     ${G}no keys left${N} in $CREDS — correct: the keys are in the vault"
     fi
 
-    local count=0
-    for f in "$KEYS"/*.gpg; do [ -e "$f" ] && count=$((count + 1)); done
+    local count=0 list=()
+    [ -n "$act" ] && exists "$act" && list+=("$act")      # [default] first
+    for n in $(names); do [ "$n" = "$act" ] || list+=("$n"); done
+    count="${#list[@]}"
     say ""
     say "${B}ACCOUNTS${N}    $count   ${D}* marks [default]: the account that plain \"aws\" uses${N}"
-    say "            ${D}LOCKED or UNLOCKED is the vault's state: one passphrase opens every account${N}"
-    local names=() x
-    [ -n "$act" ] && exists "$act" && names+=("$act")      # [default] first
-    for f in "$KEYS"/*.gpg; do
-        [ -e "$f" ] || continue
-        x="$(basename "$f" .gpg)"; [ "$x" = "$act" ] || names+=("$x")
-    done
-    for n in "${names[@]}"; do
+    say "            ${D}LOCKED or UNLOCKED: the state of the passphrase that opens the account${N}"
+    for n in "${list[@]}"; do
         mode="$(meta_get "$n" mode)"; acct="$(meta_get "$n" account)"; arn="$(meta_get "$n" arn)"
+        h="$(home_of "$n")"
+        lock_state "$h" "$(uid_of "$n")"
         say ""
-        # One lock for the whole vault: every account shows the same state.
         if [ "$n" = "$act" ]; then
-            say "${G}${B}* $n${N}  ${G}[default]${N}  ${BY}ACTIVE:$vstate${N}"
+            say "${G}${B}* $n${N}  ${G}[default]${N}  ${BY}ACTIVE:$LST${N}"
         else
-            say "  ${B}$n${N}  ${BC}NOT ACTIVE:$vstate${N}"
+            say "  ${B}$n${N}  ${BC}NOT ACTIVE:$LST${N}"
         fi
+        if [ -n "$h" ]; then
+            say "    lock      own passphrase — opens $n only. Change it: awsv passwd $n"
+            if [ "$LST" = UNLOCKED ]; then line="close it: awsv lock $n"; else line="open it: awsv unlock $n 30m"; fi
+        else
+            say "    lock      shared passphrase — the same for: $shared"
+            if [ "$LST" = UNLOCKED ]; then line="close it: awsv lock $n — closes every shared account"
+            else line="open it: awsv unlock $n 30m — opens every shared account"; fi
+        fi
+        say "    state     $LTXT   ${D}$line${N}"
         say "    account   ${acct:-not checked — stored with --no-verify}"
         say "    user      ${arn:-not checked}"
         say "    region    $(meta_get "$n" region)"
@@ -838,7 +1116,11 @@ cmd_status() {
             fi
             say "    session   $line"
         fi
-        say "    key file  $KEYS/$n.gpg"
+        if [ -n "$h" ]; then
+            say "    key file  $KEYS/$n.gpg — its GPG key is in $h"
+        else
+            say "    key file  $KEYS/$n.gpg"
+        fi
         if [ "$n" = "$act" ]; then
             say "    try       ${C}aws sts get-caller-identity${N}   ${D}— plain aws uses this account${N}"
         else
@@ -865,8 +1147,8 @@ case "$cmd" in
     creds)  cmd_creds "$@" ;;
     unlock) cmd_unlock "$@" ;;
     show)   cmd_show "$@" ;;
-    passwd) cmd_passwd ;;
-    lock)   cmd_lock ;;
+    passwd) cmd_passwd "$@" ;;
+    lock)   cmd_lock "$@" ;;
     status) cmd_status ;;
     ""|-h|--help|help) cmd_help "$@" ;;
     *)      die "unknown command '$cmd' (try --help)" ;;

@@ -16,6 +16,9 @@ pass=0 fail=0
 cleanup() {
     local h
     for h in "$T"/gnupg*; do [ -d "$h" ] && GNUPGHOME="$h" gpgconf --kill gpg-agent 2>/dev/null; done
+    for h in "$T"/home/.local/share/awsv/gnupg/* "$T"/vault2/gnupg/*; do
+        [ -d "$h" ] && gpgconf --homedir "$h" --kill gpg-agent 2>/dev/null
+    done
     rm -rf "$T"
 }
 trap cleanup EXIT
@@ -26,6 +29,18 @@ unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AW
 V="$HOME/.local/share/awsv"
 mkdir -p "$HOME/.aws" "$GNUPGHOME" "$T/bin"; chmod 700 "$GNUPGHOME"
 cp "$SRC/awsv" "$T/bin/awsv"; chmod 755 "$T/bin/awsv"
+# The key of an account with its own passphrase is made by awsv, and gpg asks
+# for that passphrase in a terminal. Here gpg takes it from AWSV_TEST_PW instead.
+REAL_GPG="$(command -v gpg)"
+cat > "$T/bin/gpg" <<EOF
+#!/bin/sh
+case "\$*" in
+    *"--quick-generate-key awsv-"*)
+        exec "$REAL_GPG" --batch --pinentry-mode loopback --passphrase "\${AWSV_TEST_PW-}" "\$@" ;;
+esac
+exec "$REAL_GPG" "\$@"
+EOF
+chmod 755 "$T/bin/gpg"
 export PATH="$T/bin:$PATH"
 
 t() {   # name, expected exit, command...
@@ -155,7 +170,9 @@ t "passwd needs a terminal" 1 awsv passwd
 has "and says so" 'needs a terminal' "$T/out"
 t "help" 0 awsv --help
 has "help lists init" 'awsv init' "$T/out"
-yes_ [ "$(grep -cE '^[a-z]+ — ' "$T/out")" = 14 ]   # every command has its section
+yes_ [ "$(grep -cE '^[a-z]+ — ' "$T/out")" = 15 ]   # every command has its section, and passphrase
+t "help passphrase" 0 awsv help passphrase
+has "explains both" 'awsv set nexum --lock own' "$T/out"
 t "help topic" 0 awsv help import
 has "the topic gives its steps" 'awsv import default --as' "$T/out"
 hasnt "a topic shows only itself" '^COMMANDS' "$T/out"
@@ -176,6 +193,46 @@ printf '[stray]\naws_access_key_id = AKIA000000000004\naws_secret_access_key = x
 t "status with a stray key" 0 awsv status
 has "warns about it" 'WARNING' "$T/out"
 has "and names the section" 'still holds a key for: stray' "$T/out"
+
+# ------------------------------------------------- a passphrase of its own
+t "set --lock own" 0 awsv set other --lock own
+yes_ [ "$(sed -n 's/^lock=//p' "$V/meta/other")" = own ]
+yes_ [ -d "$V/gnupg/other" ]
+t "the account still gives its key" 0 awsv creds other
+has "the same key" 'AKIA000000000003' "$T/out"
+t "the shared key cannot open it" 2 gpg --batch --quiet --decrypt "$V/keys/other.gpg"
+t "its own GPG home can" 0 gpg --homedir "$V/gnupg/other" --batch --quiet --decrypt "$V/keys/other.gpg"
+t "status" 0 awsv status
+has "own lock in its block" '^    lock +own passphrase — opens other only' "$T/out"
+has "shared lock in the others" '^    lock +shared passphrase — the same for: ' "$T/out"
+has "the vault lists it" '^  own +other — each has a passphrase of its own' "$T/out"
+has "how to open it" 'awsv unlock other 30m|awsv lock other' "$T/out"
+t "ls" 0 awsv ls
+has "ls shows the lock" '^other +direct +own ' "$T/out"
+t "set --lock own again changes nothing" 0 awsv set other --lock own
+has "and says so" 'on the own lock already' "$T/out"
+t "back to shared" 0 awsv set other --lock shared
+yes_ [ ! -e "$V/gnupg/other" ]                        # the unused GPG home is gone
+t "readable with the shared key again" 0 gpg --batch --quiet --decrypt "$V/keys/other.gpg"
+t "bad lock" 1 awsv set other --lock open
+has "says which are valid" "lock is 'shared' or 'own'" "$T/out"
+printf 'AKIA000000000006\n0000000000\n' > "$T/in"
+t "add --lock own" 0 sh -c "awsv add solo --stdin --no-verify --mode direct --lock own < '$T/in'"
+has "says how to open it" 'awsv unlock solo' "$T/out"
+yes_ [ -d "$V/gnupg/solo" ]
+t "rm takes its GPG home too" 0 awsv rm solo --yes
+yes_ [ ! -e "$V/gnupg/solo" ]
+t "init --lock own" 0 awsv init --lock own
+yes_ [ "$(cat "$V/lock")" = own ]
+t "a new account gets its own" 0 sh -c "awsv add solo --stdin --no-verify --mode direct < '$T/in'"
+yes_ [ "$(sed -n 's/^lock=//p' "$V/meta/solo")" = own ]
+t "status says what new accounts get" 0 awsv status
+has "own" '^  new +a new account gets a passphrase of its own' "$T/out"
+t "init --lock shared" 0 awsv init --lock shared
+t "rm solo" 0 awsv rm solo --yes
+t "'all' is reserved" 1 sh -c "awsv add all --stdin --no-verify < '$T/in'"
+t "unlock: an unknown name" 1 awsv unlock nosuch
+has "is read as a duration, and says names work too" 'bad duration .*account name' "$T/out"
 
 # --------------------------------------------------------------------- rm
 t "rm wl" 0 awsv rm wl --yes
@@ -207,6 +264,49 @@ has "locked, on its own line" '^  state +LOCKED' "$T/out"
 t "locked vault gives nothing without a terminal" 1 awsv creds locked
 has "and says what to do" 'awsv unlock' "$T/out"
 hasnt "no key in the error" 'AKIA000000000005' "$T/out"
+
+# Two locks in one vault: the shared passphrase 'pw', and 'solo' with its own
+# 'pw2'. Opening one must leave the other closed, both ways.
+printf 'AKIA000000000007\n0000000000\n' > "$T/in"
+t "add solo with its own passphrase" 0 env AWSV_TEST_PW=pw2 sh -c "awsv add solo --stdin --no-verify --mode direct --lock own < '$T/in'"
+SOLO="$AWSV_HOME/gnupg/solo"
+awsv lock >/dev/null 2>&1
+gpg --batch --pinentry-mode loopback --passphrase 'pw' --quiet --decrypt "$AWSV_HOME/keys/locked.gpg" >/dev/null 2>&1
+t "shared open: its account gives the key" 0 awsv creds locked
+t "shared open: solo stays closed" 1 awsv creds solo
+has "and names the command for solo" 'awsv unlock solo' "$T/out"
+hasnt "no key in the error" 'AKIA000000000007' "$T/out"
+t "status" 0 awsv status
+has "the shared account is open" '^\* locked +\[default\] +ACTIVE:UNLOCKED' "$T/out"
+has "solo is closed" '^  solo +NOT ACTIVE:LOCKED' "$T/out"
+has "and says how to open solo" 'open it: awsv unlock solo 30m' "$T/out"
+gpg --homedir "$SOLO" --batch --pinentry-mode loopback --passphrase 'pw2' --quiet --decrypt "$AWSV_HOME/keys/solo.gpg" >/dev/null 2>&1
+t "solo opened with its own passphrase" 0 awsv creds solo
+t "lock solo" 0 awsv lock solo
+t "solo is closed again" 1 awsv creds solo
+t "the shared account is still open" 0 awsv creds locked
+awsv lock locked >/dev/null 2>&1
+gpg --homedir "$SOLO" --batch --pinentry-mode loopback --passphrase 'pw2' --quiet --decrypt "$AWSV_HOME/keys/solo.gpg" >/dev/null 2>&1
+t "lock the shared one: its account closes" 1 awsv creds locked
+t "and solo stays open" 0 awsv creds solo
+t "lock everything" 0 awsv lock
+t "solo closes too" 1 awsv creds solo
+t "passwd NAME needs a terminal" 1 awsv passwd solo
+
+# A first init in a terminal asks the question; answer 2 creates no shared key.
+if command -v script >/dev/null 2>&1; then
+    export GNUPGHOME="$T/gnupg3" AWSV_HOME="$T/vault3"
+    mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+    printf '2\n' | script -qc "awsv init" /dev/null > "$T/out" 2>&1
+    has "init asks" 'one passphrase for every account' "$T/out"
+    has "and takes the answer" 'each new account gets a passphrase of its own' "$T/out"
+    yes_ [ "$(cat "$AWSV_HOME/lock" 2>/dev/null)" = own ]
+    yes_ [ -z "$(gpg --list-secret-keys --with-colons 2>/dev/null)" ]
+    t "status before any account" 0 awsv status
+    hasnt "not 'not set up'" 'NOT SET UP' "$T/out"
+    t "passwd with no shared key names the way" 1 script -qec "awsv passwd" /dev/null
+    has "awsv passwd NAME" 'name one: awsv passwd NAME' "$T/out"
+fi
 export GNUPGHOME="$T/gnupg" AWSV_HOME="$V"
 
 # ---------------------------------------------- where the session cache goes

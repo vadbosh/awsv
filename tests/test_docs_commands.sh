@@ -16,7 +16,14 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d)"
 pass=0 fail=0
-cleanup() { GNUPGHOME="$T/gnupg" gpgconf --kill gpg-agent 2>/dev/null; rm -rf "$T"; }
+kill_own_agents() {   # the gpg-agent of every account with its own passphrase
+    local h
+    for h in "$T"/home/.local/share/awsv/gnupg/*; do
+        [ -d "$h" ] && gpgconf --homedir "$h" --kill gpg-agent 2>/dev/null
+    done
+    return 0
+}
+cleanup() { kill_own_agents; GNUPGHOME="$T/gnupg" gpgconf --kill gpg-agent 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 
 KNOWN=" init add import ls list use set rekey rm remove exec show passwd unlock lock status creds help "
@@ -29,7 +36,17 @@ export HOME="$T/home" GNUPGHOME="$T/gnupg" AWSV_RUN="$T/run" NO_COLOR=1
 export AWS_CONFIG_FILE="$HOME/.aws/config" AWS_SHARED_CREDENTIALS_FILE="$HOME/.aws/creds.ini"
 unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 mkdir -p "$HOME/.aws" "$GNUPGHOME" "$T/bin"; chmod 700 "$GNUPGHOME"
-cp "$SRC/awsv" "$T/bin/awsv"; chmod 755 "$T/bin/awsv"; export PATH="$T/bin:$PATH"
+cp "$SRC/awsv" "$T/bin/awsv"; chmod 755 "$T/bin/awsv"
+# The key of an account with its own passphrase: gpg would ask in a terminal; here it is empty.
+REAL_GPG="$(command -v gpg)"
+cat > "$T/bin/gpg" <<EOF
+#!/bin/sh
+case "\$*" in
+    *"--quick-generate-key awsv-"*) exec "$REAL_GPG" --batch --pinentry-mode loopback --passphrase '' "\$@" ;;
+esac
+exec "$REAL_GPG" "\$@"
+EOF
+chmod 755 "$T/bin/gpg"; export PATH="$T/bin:$PATH"
 gpg --batch --pinentry-mode loopback --passphrase '' \
     --quick-generate-key "awsv local vault" future-default default never 2>/dev/null
 awsv init >/dev/null 2>&1
@@ -40,6 +57,8 @@ for n in work client nexum old prod other; do
     printf 'AKIA00000000000%d\n0000000000\n' "$i" | awsv add "$n" --stdin --no-verify --mode direct >/dev/null 2>&1
     i=$((i + 1))
 done
+printf 'AKIA000000000008\n0000000000\n' | awsv add solo --stdin --no-verify --mode direct --lock own >/dev/null 2>&1
+kill_own_agents
 printf '[client]\naws_access_key_id = AKIA000000000009\naws_secret_access_key = 0000000000\n' \
     > "$AWS_SHARED_CREDENTIALS_FILE"
 tar -C "$HOME" -cf "$T/pristine.tar" .        # each command starts from this state
@@ -73,6 +92,7 @@ while IFS= read -r c; do
         fail=$((fail + 1)); echo "FAIL looks like a command, is not one: $c"; continue ;;
     esac
     cmd="$(printf '%s' "$c" | fill)"
+    kill_own_agents
     rm -rf "$HOME"; mkdir -p "$HOME"; tar -C "$HOME" -xf "$T/pristine.tar"
     timeout 30 sh -c "$cmd" < /dev/null > "$T/out" 2>&1
     if grep -qE "$BAD" "$T/out"; then
@@ -83,12 +103,14 @@ while IFS= read -r c; do
 done < "$T/candidates"
 
 # ------------------------------------------- the other commands the docs give
+kill_own_agents
 rm -rf "$HOME"; mkdir -p "$HOME"; tar -C "$HOME" -xf "$T/pristine.tar"
 check() {   # name, command — must exit 0
     if sh -c "$2" > "$T/out" 2>&1; then pass=$((pass + 1)); else
         fail=$((fail + 1)); echo "FAIL $1: $2"; sed 's/^/    /' "$T/out" | head -3; fi
 }
 check "the gpg command that shows a key" 'gpg --quiet --decrypt ~/.local/share/awsv/keys/work.gpg'
+check "the same for an own passphrase" 'gpg --homedir ~/.local/share/awsv/gnupg/solo --quiet --decrypt ~/.local/share/awsv/keys/solo.gpg'
 check "the gpg name in the recovery steps" 'gpg --list-secret-keys "awsv local vault"'
 check "gpg has the recovery option" 'gpg --dump-options | grep -qx -- --delete-secret-and-public-keys'
 check "gpg has the passphrase option" 'gpg --dump-options | grep -qx -- --change-passphrase'
