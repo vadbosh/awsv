@@ -23,7 +23,7 @@ KNOWN=" init add import ls list use set rekey rm remove exec show passwd unlock 
 # Words that follow "awsv" in a sentence about the tool, not in a command.
 PROSE=" keeps writes stores uses then is hands reads checks returned asks pick works creates trades block repository to "
 # Syntax refusals: the command, as printed, is wrong.
-BAD='unknown command|unknown option|^awsv: usage:|bad name|bad region|mode is|no help topic|nothing to change'
+BAD='unknown command|unknown option|^awsv: usage:|bad name|bad region|bad duration|mode is|no help topic|nothing to change'
 
 export HOME="$T/home" GNUPGHOME="$T/gnupg" AWSV_RUN="$T/run" NO_COLOR=1
 export AWS_CONFIG_FILE="$HOME/.aws/config" AWS_SHARED_CREDENTIALS_FILE="$HOME/.aws/creds.ini"

@@ -67,7 +67,8 @@ help_text() {
 cat <<'EOF'
 awsv keeps AWS access keys in an encrypted vault, not in ~/.aws/credentials.
 aws, Terraform and the SDKs get the keys through ~/.aws/config.
-You type one passphrase, and the vault stays open for 8 hours.
+You type one passphrase, and the vault stays open for as long as you choose:
+awsv unlock 30m, awsv unlock 8h. While it is open, see: awsv help show
 
   awsv help COMMAND    one command and its example
   awsv help            this page
@@ -143,19 +144,34 @@ FILES
     $ awsv use work                     # when old was [default]
   Then deactivate the key in IAM. Removal from the vault does not revoke it.
 
-@ show | see a stored key
+@ show | see a stored key, and what the vault does not protect
   ! awsv show work
   !   prints the key id and the secret
   !   the same with gpg: gpg --decrypt ~/.local/share/awsv/keys/work.gpg
   It asks for the passphrase when the vault is locked.
   It refuses in a pipe, a script or an assistant's shell, so the secret stays out of logs.
 
+  ! While the vault is open, nothing asks before a key is read.
+  ! Any process of this user can run gpg --decrypt and get the key.
+  ! This includes scripts and an AI assistant that runs as you.
+
+  The vault protects                  The vault does not protect
+  the keys on disk                    the keys from processes of this user
+  backups and disk snapshots            while the vault is open
+  the keys from other users           the keys from a root session
+  the keys after lock, the end of     a key someone printed while
+    the unlock window, or a reboot      the vault was open
+
 @ passwd | change the passphrase
     $ awsv passwd                       # the current passphrase, then the new one twice
   The files in keys/ do not change. The passphrase locks the vault key, not each file.
 
-@ unlock | type the passphrase now
-    $ awsv unlock                       # scripts and assistants can then use the vault
+@ unlock | open the vault for a time you choose
+    $ awsv unlock 30m                   # a short job: the vault closes by itself in 30 minutes
+    $ awsv unlock 8h                    # a working day; also what plain "awsv unlock" does
+    $ awsv unlock 1h30m                 # any mix of hours and minutes, up to 24h
+    $ awsv status                       # shows when it closes
+  Running unlock again starts a new window; the old one ends at once.
   "Error when retrieving credentials from custom-process" means: run awsv unlock.
 
 @ lock | close the vault now
@@ -657,17 +673,53 @@ cmd_creds() {   # the credential_process entry point
     fi
 }
 
+# "30m", "8h", "1h30m" → seconds. Capped at 24 hours, so a typo such as 999h
+# cannot leave the vault open for weeks.
+parse_duration() {
+    local h m t
+    [[ "$1" =~ ^(([0-9]+)h)?(([0-9]+)m)?$ ]] && [ -n "$1" ] || return 1
+    h="${BASH_REMATCH[2]:-0}"; m="${BASH_REMATCH[4]:-0}"
+    t=$(( 10#$h * 3600 + 10#$m * 60 ))
+    [ "$t" -ge 60 ] && [ "$t" -le 86400 ] || return 1
+    printf '%s\n' "$t"
+}
+
+# How long gpg-agent keeps the passphrase. Both values the same: the window is
+# fixed from the moment the passphrase is typed, however often it is used.
+set_agent_ttl() {
+    local conf="${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf" k
+    for k in default-cache-ttl max-cache-ttl; do
+        if grep -q "^$k" "$conf" 2>/dev/null; then sed -i "s/^$k .*/$k $1/" "$conf"
+        else printf '%s %s\n' "$k" "$1" >> "$conf"; fi
+    done
+}
+agent_ttl() { sed -n 's/^max-cache-ttl[[:space:]]*//p' "${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf" 2>/dev/null | head -1; }
+
+human() {   # seconds → "8h", "30m", "1h30m"
+    local h=$(( $1 / 3600 )) m=$(( $1 % 3600 / 60 ))
+    printf '%s%s\n' "$([ "$h" -gt 0 ] && printf '%dh' "$h")" "$([ "$m" -gt 0 ] && printf '%dm' "$m")"
+}
+
 cmd_unlock() {
-    local f
+    local dur="${1:-8h}" secs f until
+    secs="$(parse_duration "$dur")" \
+        || die "bad duration '$dur': use minutes and hours, such as 30m, 8h or 1h30m; at most 24h"
     need_tty "unlock"
     for f in "$KEYS"/*.gpg; do [ -e "$f" ] && break; done
     [ -e "${f:-}" ] || die "the vault is empty — nothing to unlock"
+    set_agent_ttl "$secs"
+    gpgconf --reload gpg-agent                    # forget the old window, read the new one
     gpg --quiet --decrypt "$f" >/dev/null || die "not unlocked"
-    ok "unlocked: tools, and the assistant in this machine's shell, can use the vault until the agent forgets"
+    until=$(( $(date +%s) + secs ))
+    printf '%s\n' "$until" > "$AWSV_HOME/unlocked-until"
+    ok "unlocked for $(human "$secs"), until $(date -d "@$until" '+%H:%M %Z')"
+    say "  Until then every process of this user can read the keys without a question: awsv help show"
+    say "  Close it earlier: awsv lock"
 }
 
 cmd_lock() {
     gpgconf --reload gpg-agent
+    rm -f "$AWSV_HOME/unlocked-until"
     drop_cache
     ok "locked: the agent forgot the passphrase and every cached session is deleted"
 }
@@ -705,17 +757,26 @@ cmd_status() {
     act="$(active)"; now="$(date +%s)"
 
     say "${B}VAULT${N}       $AWSV_HOME"
+    # The state first and on its own line: open or closed is the one thing to
+    # see at a glance. What it means goes on the line below.
     if [ -z "$(fpr)" ]; then
-        say "  GPG key   ${Y}none${N} — create it: awsv init"
+        say "  state     ${Y}${B}NOT SET UP${N}"
+        say "            there is no GPG key yet — create it: awsv init"
     else
-        say "  GPG key   $(fpr | tail -c 17) in ~/.gnupg — encrypts every file in keys/. Change its passphrase with: awsv passwd"
         g="$(grip)"
         st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
-        if [ "$st" = 1 ]; then
-            say "  agent     ${G}unlocked${N} — the passphrase is in memory, up to 8 hours from when you typed it"
+        local u; u="$(cat "$AWSV_HOME/unlocked-until" 2>/dev/null || echo 0)"
+        if [ "$st" = 1 ] && [ "$u" -gt "$now" ]; then
+            say "  state     ${G}${B}UNLOCKED${N} until $(date -d "@$u" '+%H:%M %Z'), $(( (u - now) / 60 )) min left"
+            say "            any process of this user can read the keys now — close it: awsv lock"
+        elif [ "$st" = 1 ]; then
+            say "  state     ${G}${B}UNLOCKED${N} for up to $(human "$(agent_ttl)") from when the passphrase was typed"
+            say "            any process of this user can read the keys now — close it: awsv lock"
         else
-            say "  agent     ${Y}locked${N} — the next aws command asks for the passphrase in a terminal"
+            say "  state     ${Y}${B}LOCKED${N}"
+            say "            the next aws command asks for the passphrase — open it: awsv unlock 30m"
         fi
+        say "  GPG key   $(fpr | tail -c 17) in ~/.gnupg — encrypts every file in keys/. Change its passphrase with: awsv passwd"
     fi
     if [ -n "$AWSV_RUN" ]; then
         say "  sessions  $AWSV_RUN — one-hour sessions, in memory; a reboot deletes them"
@@ -797,7 +858,7 @@ case "$cmd" in
     rm|remove) cmd_rm "$@" ;;
     exec)   cmd_exec "$@" ;;
     creds)  cmd_creds "$@" ;;
-    unlock) cmd_unlock ;;
+    unlock) cmd_unlock "$@" ;;
     show)   cmd_show "$@" ;;
     passwd) cmd_passwd ;;
     lock)   cmd_lock ;;

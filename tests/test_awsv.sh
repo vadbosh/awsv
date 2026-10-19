@@ -136,6 +136,21 @@ if command -v script >/dev/null 2>&1; then   # script(1) gives the command a rea
     script -qc "awsv show other" /dev/null > "$T/out" 2>&1
     has "show prints the key on a terminal" 'aws_access_key_id += AKIA000000000003' "$T/out"
 fi
+t "unlock: a bad duration" 1 awsv unlock 99x
+has "says what is accepted" 'bad duration' "$T/out"
+t "unlock: more than 24h refused" 1 awsv unlock 25h
+if command -v script >/dev/null 2>&1; then
+    script -qc "awsv unlock 30m" /dev/null > "$T/out" 2>&1
+    has "unlock 30m opens for 30 minutes" 'unlocked for 30m, until' "$T/out"
+    has "the agent keeps it 1800 s" '^max-cache-ttl 1800$' "$GNUPGHOME/gpg-agent.conf"
+    has "from the moment it is typed" '^default-cache-ttl 1800$' "$GNUPGHOME/gpg-agent.conf"
+    u="$(cat "$V/unlocked-until" 2>/dev/null || echo 0)"; now="$(date +%s)"
+    yes_ [ $((u - now)) -gt 1750 ] && yes_ [ $((u - now)) -le 1800 ]   # the end is recorded
+    script -qc "awsv unlock 8h" /dev/null > "$T/out" 2>&1
+    has "a second unlock replaces the window" '^max-cache-ttl 28800$' "$GNUPGHOME/gpg-agent.conf"
+    t "lock" 0 awsv lock
+    yes_ [ ! -e "$V/unlocked-until" ]                                   # lock forgets the end
+fi
 t "passwd needs a terminal" 1 awsv passwd
 has "and says so" 'needs a terminal' "$T/out"
 t "help" 0 awsv --help
@@ -179,11 +194,13 @@ printf 'pinentry-program /usr/bin/pinentry-curses\n' > "$GNUPGHOME/gpg-agent.con
 printf 'AKIA000000000005\n0000000000\n' > "$T/in"
 t "add to the locked vault" 0 sh -c "awsv add locked --stdin --no-verify --mode direct < '$T/in'"
 gpg --batch --pinentry-mode loopback --passphrase 'pw' --quiet --decrypt "$AWSV_HOME/keys/locked.gpg" >/dev/null 2>&1
+printf '%s\n' "$(( $(date +%s) + 600 ))" > "$AWSV_HOME/unlocked-until"   # as awsv unlock 10m would
 t "status sees the cached passphrase" 0 awsv status
-has "unlocked" 'unlocked' "$T/out"
+has "and when it closes" 'UNLOCKED until .*, [0-9]+ min left' "$T/out"
+has "unlocked, on its own line" '^  state +UNLOCKED' "$T/out"
 t "lock" 0 awsv lock
 t "status after lock" 0 awsv status
-has "locked" 'agent +locked' "$T/out"
+has "locked, on its own line" '^  state +LOCKED' "$T/out"
 t "locked vault gives nothing without a terminal" 1 awsv creds locked
 has "and says what to do" 'awsv unlock' "$T/out"
 hasnt "no key in the error" 'AKIA000000000005' "$T/out"

@@ -23,7 +23,7 @@ aws s3 ls
   ▼
 awsv
   │  opens keys/work.gpg — this needs the passphrase,
-  │  which gpg-agent keeps in memory for 8 hours
+  │  which gpg-agent keeps in memory for the time you chose
   │
   ├─ session mode:  trades the key for a one-hour session at AWS STS
   └─ direct mode:   hands out the key itself
@@ -39,6 +39,28 @@ Three things follow from this:
 - **When the vault is locked and nobody can type the passphrase, the call
   fails.** A cron job, a script or an AI assistant has no terminal to ask in.
   Access closes by itself instead of staying open.
+
+## What the vault does not protect
+
+While the vault is open, nothing asks before a key is read. Any process that runs
+as your user can get a key with `gpg --decrypt`, with no passphrase and no
+question. That includes scripts, cron jobs and an AI assistant that runs as you.
+It is the same thing that lets `aws` and Terraform work without prompts.
+gpg-agent has no confirmation for each use of such a key.
+
+| The vault protects | The vault does not protect |
+|---|---|
+| the keys on disk, in backups and in disk snapshots | the keys from processes of your user while the vault is open |
+| the keys from other users of the machine | the keys from a root session |
+| the keys after `awsv lock`, at the end of the unlock window, after a reboot | a key someone already printed while the vault was open |
+
+So keep the vault open only for as long as you need it:
+
+```bash
+awsv unlock 30m      # a short job: the vault closes by itself in 30 minutes
+awsv unlock 8h       # a working day
+awsv lock            # finished early: close it now
+```
 
 ## Install
 
@@ -101,7 +123,7 @@ AWS checks the key before awsv stores it. The first account becomes `[default]`.
 | replace a key | `awsv rekey NAME`, then deactivate the old key in IAM |
 | see a stored key | `awsv show NAME` |
 | change the passphrase | `awsv passwd` |
-| open the vault now | `awsv unlock` |
+| open the vault for a while | `awsv unlock 30m`, `awsv unlock 8h` |
 | close the vault now | `awsv lock` |
 | check that everything is right | `awsv status` |
 
@@ -122,7 +144,8 @@ AWS checks the key before awsv stores it. The first account becomes `[default]`.
 │   ├── work
 │   └── client
 ├── active            one word: the name of the [default] account
-└── backup/           copies made before each change
+├── backup/           copies made before each change
+└── unlocked-until    when the current unlock window ends; awsv status reads it
 ```
 
 Outside this directory:
@@ -130,7 +153,7 @@ Outside this directory:
 | Path | What it is |
 |---|---|
 | `~/.gnupg/` | the GPG key that encrypts the vault, locked by your passphrase |
-| `~/.gnupg/gpg-agent.conf` | how long the passphrase stays in memory: `max-cache-ttl 28800`, 8 hours |
+| `~/.gnupg/gpg-agent.conf` | how long the passphrase stays in memory; `awsv unlock 30m` sets it |
 | `~/.aws/config` | awsv writes a block between `# >>> awsv` and `# <<< awsv <<<`. The rest stays yours |
 | `~/.aws/credentials` | empty |
 | `$XDG_RUNTIME_DIR/awsv/` | cached one-hour sessions, in memory. A logout or a reboot deletes them |
@@ -182,16 +205,16 @@ roles and policies, and long runs are common. Use `session` for work by hand.
 ### Long Terraform runs in session mode
 
 The session renews itself when it expires: the AWS SDK calls awsv again. That
-call needs the vault open. The passphrase stays in memory for 8 hours from the
-moment you typed it, whether you use it or not. A run that starts in the last
-half hour of that window can fail in the middle. Before a long run, either
-switch the account to `direct`, or restart the window with
-`awsv lock && awsv unlock`.
+call needs the vault open. The passphrase stays in memory for the window you
+chose, counted from the moment you typed it, whether you use it or not. A run
+that outlasts the window fails in the middle. Before a long run, either switch
+the account to `direct`, or open a window long enough for it: `awsv unlock 8h`.
 
 ### When the passphrase is asked
 
 The first `aws` command after the vault locks asks for the passphrase in your
-terminal. After that it is quiet for 8 hours.
+terminal. After that it is quiet for the window you chose last time with
+`awsv unlock`; 8 hours if you never chose one.
 
 A command without a terminal cannot ask. It fails with
 `Error when retrieving credentials from custom-process`. This happens to cron
