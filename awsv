@@ -160,10 +160,10 @@ FILES
 
 @ status | check the state
     $ awsv status
-  [default]    the account that plain "aws" uses
-  agent        unlocked: the passphrase is in memory, up to 8 hours
-  session      cached one-hour sessions; only accounts in session mode have one
-  plain text   "no keys left" is correct; a red WARNING means a key is still there
+  VAULT: the GPG key, whether the vault is open, where sessions are kept,
+  and whether any key is still in ~/.aws/credentials.
+  ACCOUNTS: one block per account in the same shape. * marks [default].
+  Each block ends with the command that uses the account.
 EOF
 }
 
@@ -431,9 +431,11 @@ drop_section() {   # remove [s] or #[s] with its lines; keep an encrypted backup
     chmod 600 "$CREDS"
 }
 
-plain_keys_left() {   # active key lines still in the credentials file
-    [ -f "$CREDS" ] || { echo 0; return; }
-    grep -cE '^[[:space:]]*aws_access_key_id[[:space:]]*=' "$CREDS"
+plain_sections() {   # names of the sections that still hold a key in plain text
+    [ -f "$CREDS" ] || return 0
+    awk '/^[[:space:]]*\[/ { s = $0; sub(/^[[:space:]]*\[/, "", s); sub(/\].*$/, "", s); next }
+         /^[[:space:]]*#/ { next }
+         /^[[:space:]]*aws_access_key_id[[:space:]]*=/ && s != "" { print s }' "$CREDS" | sort -u
 }
 
 # ------------------------------------------------------------- the commands
@@ -693,37 +695,89 @@ cmd_passwd() {
     ok "passphrase changed — the next use asks for the new one"
 }
 
+# One block for the vault, then one block per account, all in the same shape.
+# Every line says what it means, not only a value.
 cmd_status() {
-    local act g st n f exp left
-    act="$(active)"
-    say "vault:        $AWSV_HOME — $(ls "$KEYS"/*.gpg 2>/dev/null | wc -l) account(s)"
-    say "[default]:    ${B}${act:-none}${N}${act:+ — $(meta_get "$act" arn)}"
-    if [ -z "$(fpr)" ]; then say "GPG key:      ${Y}none — run 'awsv init'${N}"; else
-        say "GPG key:      $(fpr | tail -c 17)"
+    local act g st f n mode exp_s left now cache acct arn plain line
+    act="$(active)"; now="$(date +%s)"
+
+    say "${B}VAULT${N}       $AWSV_HOME"
+    if [ -z "$(fpr)" ]; then
+        say "  GPG key   ${Y}none${N} — create it: awsv init"
+    else
+        say "  GPG key   $(fpr | tail -c 17) \"$GPG_UID\" — encrypts every file in keys/"
         g="$(grip)"
         st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
-        case "$st" in
-            1) say "agent:        ${G}unlocked${N} — the passphrase is cached" ;;
-            *) say "agent:        ${Y}locked${N} — the next use asks for the passphrase (awsv unlock)" ;;
-        esac
+        if [ "$st" = 1 ]; then
+            say "  agent     ${G}unlocked${N} — the passphrase is in memory, up to 8 hours from when you typed it"
+        else
+            say "  agent     ${Y}locked${N} — the next aws command asks for the passphrase in a terminal"
+        fi
     fi
     if [ -n "$AWSV_RUN" ]; then
-        say "cache:        $AWSV_RUN"
+        say "  sessions  $AWSV_RUN — one-hour sessions, in memory; a reboot deletes them"
     else
-        say "cache:        ${Y}none${N} — no private tmpfs, so every call asks STS for a session"
+        say "  sessions  ${Y}not cached${N} — no private tmpfs, so every call asks AWS STS"
     fi
-    for f in ${AWSV_RUN:+"$AWSV_RUN"/*}; do
-        [ -f "$f" ] || continue
-        n="$(basename "$f")"; exp="$(sed -n 4p "$f")"
-        say "session:      ${C}$n${N} until $(date -d "$exp" '+%H:%M %Z' 2>/dev/null || echo "$exp")"
+    plain="$(plain_sections | tr '\n' ' ')"; plain="${plain% }"
+    if [ -n "$plain" ]; then
+        say "  ${R}${B}WARNING${N}   ${R}$CREDS still holds a key for: $plain${N}"
+        say "            A key there wins over the vault. Move it: awsv import NAME"
+    else
+        say "  plain     ${G}no keys left${N} in $CREDS — correct: the keys are in the vault"
+    fi
+
+    local count=0
+    for f in "$KEYS"/*.gpg; do [ -e "$f" ] && count=$((count + 1)); done
+    say ""
+    say "${B}ACCOUNTS${N}    $count   ${D}* marks [default]: the account that plain \"aws\" uses${N}"
+    local names=() x
+    [ -n "$act" ] && exists "$act" && names+=("$act")      # [default] first
+    for f in "$KEYS"/*.gpg; do
+        [ -e "$f" ] || continue
+        x="$(basename "$f" .gpg)"; [ "$x" = "$act" ] || names+=("$x")
     done
-    left="$(plain_keys_left)"
-    if [ "$left" -gt 0 ]; then
-        say "${R}${B}WARNING:${N}      ${R}$CREDS still holds $left key(s) in plain text.${N}"
-        say "              A key there overrides credential_process — the vault is not used for that profile."
-    else
-        say "plain text:   ${G}no keys left in $CREDS${N}"
-    fi
+    for n in "${names[@]}"; do
+        mode="$(meta_get "$n" mode)"; acct="$(meta_get "$n" account)"; arn="$(meta_get "$n" arn)"
+        say ""
+        if [ "$n" = "$act" ]; then
+            say "${G}${B}* $n${N}  ${G}[default]${N}"
+        else
+            say "  ${B}$n${N}"
+        fi
+        say "    account   ${acct:-not checked — stored with --no-verify}"
+        say "    user      ${arn:-not checked}"
+        say "    region    $(meta_get "$n" region)"
+        if [ "$mode" = direct ]; then
+            say "    mode      direct — tools get the stored key itself"
+            say "    session   none — direct mode does not use sessions"
+        else
+            say "    mode      session — tools get a one-hour session, never the key"
+            cache="$(cache_file "$n")"
+            if [ -z "$AWSV_RUN" ]; then
+                line="not cached — every call asks AWS STS for a new one"
+            elif [ -n "$cache" ] && [ -f "$cache" ]; then
+                exp_s="$(date -d "$(sed -n 4p "$cache")" +%s 2>/dev/null || echo 0)"
+                left=$(( (exp_s - now) / 60 ))
+                if [ "$left" -gt 0 ]; then
+                    line="${G}valid${N} until $(date -d "@$exp_s" '+%H:%M %Z'), $left min left"
+                else
+                    line="expired — the next call gets a new one"
+                fi
+            else
+                line="none yet — the next aws call gets one"
+            fi
+            say "    session   $line"
+        fi
+        say "    key file  $KEYS/$n.gpg"
+        if [ "$n" = "$act" ]; then
+            say "    run       ${C}aws ...${N}"
+        else
+            say "    run       ${C}aws --profile $n ...${N}   or make it [default]: ${C}awsv use $n${N}"
+        fi
+    done
+    [ "$count" -gt 0 ] || say "  ${D}(none yet — awsv add NAME, or awsv import SECTION)${N}"
+    return 0
 }
 
 # ------------------------------------------------------------------- main

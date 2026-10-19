@@ -150,9 +150,14 @@ has "and lists the real ones" 'topics: init add import' "$T/out"
 # ----------------------------------------------------------------- status
 t "status" 0 awsv status
 has "no plain keys" 'no keys left' "$T/out"
+has "the [default] account is marked" '^\* nexum +\[default\]' "$T/out"
+yes_ [ "$(sed -n '/^ACCOUNTS/,$p' "$T/out" | grep -m1 -E '^(\* |  )[a-z]')" = "* nexum  [default]" ]   # and comes first
+has "every account has its own block" '^  wl$' "$T/out"
+has "each block says how to use it" 'aws --profile wl' "$T/out"
 printf '[stray]\naws_access_key_id = AKIA000000000004\naws_secret_access_key = x\n' >> "$AWS_SHARED_CREDENTIALS_FILE"
 t "status with a stray key" 0 awsv status
 has "warns about it" 'WARNING' "$T/out"
+has "and names the section" 'still holds a key for: stray' "$T/out"
 
 # --------------------------------------------------------------------- rm
 t "rm wl" 0 awsv rm wl --yes
@@ -178,7 +183,7 @@ t "status sees the cached passphrase" 0 awsv status
 has "unlocked" 'unlocked' "$T/out"
 t "lock" 0 awsv lock
 t "status after lock" 0 awsv status
-has "locked" 'agent: +locked' "$T/out"
+has "locked" 'agent +locked' "$T/out"
 t "locked vault gives nothing without a terminal" 1 awsv creds locked
 has "and says what to do" 'awsv unlock' "$T/out"
 hasnt "no key in the error" 'AKIA000000000005' "$T/out"
@@ -189,9 +194,9 @@ export GNUPGHOME="$T/gnupg" AWSV_HOME="$V"
 # value of AWSV_RUN may turn into a path under / that rm then deletes.
 mkdir -p "$T/xdg"; chmod 700 "$T/xdg"
 t "cache under XDG_RUNTIME_DIR" 0 env -u AWSV_RUN XDG_RUNTIME_DIR="$T/xdg" awsv status
-has "uses it" "cache: +$T/xdg/awsv" "$T/out"
+has "uses it" "sessions +$T/xdg/awsv" "$T/out"
 t "empty AWSV_RUN turns the cache off" 0 env AWSV_RUN= awsv status
-has "and says so" 'cache: +none' "$T/out"
+has "and says so" 'sessions +not cached' "$T/out"
 t "lock with no cache deletes nothing" 0 env AWSV_RUN= awsv lock
 t "rm with no cache" 0 env AWSV_RUN= awsv rm other --yes
 printf 'AKIA000000000003\n0000000000\n' > "$T/in"
@@ -200,10 +205,10 @@ t "relative AWSV_RUN refused" 1 env AWSV_RUN=relative awsv status
 t "AWSV_RUN=/ refused" 1 env AWSV_RUN=/ awsv status
 if [ "$(id -u)" = 0 ]; then
     t "root without XDG_RUNTIME_DIR" 0 env -u AWSV_RUN -u XDG_RUNTIME_DIR awsv status
-    has "uses /run/awsv" 'cache: +/run/awsv' "$T/out"
+    has "uses /run/awsv" 'sessions +/run/awsv' "$T/out"
 else
     t "a normal user without XDG_RUNTIME_DIR" 0 env -u AWSV_RUN -u XDG_RUNTIME_DIR awsv status
-    has "gets no cache, and no error" 'cache: +none' "$T/out"
+    has "gets no cache, and no error" 'sessions +not cached' "$T/out"
 fi
 
 # --------------------------------------------------------------- install.sh
