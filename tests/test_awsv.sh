@@ -170,6 +170,28 @@ has "and says what to do" 'awsv unlock' "$T/out"
 hasnt "no key in the error" 'AKIAFAKELOCKED' "$T/out"
 export GNUPGHOME="$T/gnupg" AWSV_HOME="$V"
 
+# ---------------------------------------------- where the session cache goes
+# A normal user cannot write to /run. The cache must follow the user, and no
+# value of AWSV_RUN may turn into a path under / that rm then deletes.
+mkdir -p "$T/xdg"; chmod 700 "$T/xdg"
+t "cache under XDG_RUNTIME_DIR" 0 env -u AWSV_RUN XDG_RUNTIME_DIR="$T/xdg" awsv status
+has "uses it" "cache: +$T/xdg/awsv" "$T/out"
+t "empty AWSV_RUN turns the cache off" 0 env AWSV_RUN= awsv status
+has "and says so" 'cache: +none' "$T/out"
+t "lock with no cache deletes nothing" 0 env AWSV_RUN= awsv lock
+t "rm with no cache" 0 env AWSV_RUN= awsv rm other --yes
+printf 'AKIAFAKEOTHER0000003\nfake-secret-other\n' > "$T/in"
+t "add back" 0 sh -c "awsv add other --stdin --no-verify --mode direct < '$T/in'"
+t "relative AWSV_RUN refused" 1 env AWSV_RUN=relative awsv status
+t "AWSV_RUN=/ refused" 1 env AWSV_RUN=/ awsv status
+if [ "$(id -u)" = 0 ]; then
+    t "root without XDG_RUNTIME_DIR" 0 env -u AWSV_RUN -u XDG_RUNTIME_DIR awsv status
+    has "uses /run/awsv" 'cache: +/run/awsv' "$T/out"
+else
+    t "a normal user without XDG_RUNTIME_DIR" 0 env -u AWSV_RUN -u XDG_RUNTIME_DIR awsv status
+    has "gets no cache, and no error" 'cache: +none' "$T/out"
+fi
+
 # --------------------------------------------------------------- install.sh
 P="$T/prefix"
 t "install --check" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh" --check

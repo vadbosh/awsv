@@ -94,17 +94,29 @@ check() {
         if command -v "$t" >/dev/null 2>&1; then ok "$t"; else bad "$t"; fi
     done
 
-    # Cached STS sessions live in $AWSV_RUN, by default /run/awsv. A tmpfs is
-    # what makes them disappear on reboot.
-    local run="${AWSV_RUN:-/run/awsv}" parent fs
-    parent="$(dirname "$run")"
-    if [ -w "$parent" ] || [ -w "$run" ]; then
-        fs="$(df --output=fstype "$parent" 2>/dev/null | tail -1)"
-        if [ "$fs" = tmpfs ]; then ok "session cache in $run (tmpfs)"
-        else soft "session cache in $run is on $fs, not tmpfs — sessions survive a reboot"; fi
+    # Where awsv will cache STS sessions — the same choice awsv itself makes:
+    # AWSV_RUN, else $XDG_RUNTIME_DIR/awsv, else /run/awsv for root, else none.
+    # A normal user cannot write to /run, so no cache is a valid outcome, not an
+    # error: awsv then asks STS on every call.
+    local run parent fs
+    if [ -n "${AWSV_RUN+x}" ]; then run="$AWSV_RUN"
+    elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -w "$XDG_RUNTIME_DIR" ]; then
+        run="$XDG_RUNTIME_DIR/awsv"
+    elif [ "$(id -u)" = 0 ]; then run=/run/awsv
+    else run=""; fi
+    if [ -z "$run" ]; then
+        soft "no session cache: XDG_RUNTIME_DIR is not set, so every aws call asks STS"
+        hint "a normal login (ssh, console) sets it; or set AWSV_RUN to a private directory"
     else
-        bad "cannot write to $parent for the session cache"
-        hint "set AWSV_RUN to a writable directory, ideally on tmpfs"
+        parent="$(dirname "$run")"
+        if [ -w "$parent" ] || [ -w "$run" ]; then
+            fs="$(df --output=fstype "$parent" 2>/dev/null | tail -1)"
+            if [ "$fs" = tmpfs ]; then ok "session cache in $run (tmpfs)"
+            else soft "session cache in $run is on $fs, not tmpfs — sessions survive a reboot"; fi
+        else
+            bad "cannot write to $parent for the session cache"
+            hint "set AWSV_RUN to a writable directory, ideally on tmpfs"
+        fi
     fi
 
     case ":$PATH:" in

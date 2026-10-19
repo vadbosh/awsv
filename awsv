@@ -9,7 +9,29 @@ set -uo pipefail
 umask 077
 
 AWSV_HOME="${AWSV_HOME:-$HOME/.local/share/awsv}"
-AWSV_RUN="${AWSV_RUN:-/run/awsv}"     # tmpfs: cached STS sessions, gone on reboot
+# Cached STS sessions live on a private tmpfs, so a reboot clears them.
+#   AWSV_RUN set            that directory; set it empty to turn the cache off
+#   $XDG_RUNTIME_DIR/awsv   a normal user: /run/user/UID, private, made at login
+#   /run/awsv               root without XDG_RUNTIME_DIR
+#   none                    no private tmpfs: no cache, and every call asks STS
+# A normal user cannot write to /run, so /run/awsv is for root only.
+if [ -z "${AWSV_RUN+x}" ]; then
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -w "$XDG_RUNTIME_DIR" ]; then
+        AWSV_RUN="$XDG_RUNTIME_DIR/awsv"
+    elif [ "$(id -u)" = 0 ]; then
+        AWSV_RUN=/run/awsv
+    else
+        AWSV_RUN=""
+    fi
+fi
+# Every cache path is built from this value, and a cache path is deleted with
+# rm. An empty or relative value must never turn into a path under / .
+case "$AWSV_RUN" in
+    "") ;;
+    /) printf 'awsv: AWSV_RUN cannot be /\n' >&2; exit 1 ;;
+    /*) ;;
+    *) printf 'awsv: AWSV_RUN must be an absolute path, not %s\n' "$AWSV_RUN" >&2; exit 1 ;;
+esac
 CONFIG="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
 CREDS="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
 SESSION_SECONDS="${AWSV_SESSION_SECONDS:-3600}"
@@ -89,12 +111,13 @@ FILES
   ~/.local/share/awsv/keys/NAME.gpg   the encrypted keys, one file per account
   ~/.local/share/awsv/meta/NAME       region, mode, account id and ARN; not secret
   ~/.local/share/awsv/backup/         earlier config files, encrypted credentials files
-  /run/awsv/NAME                      cached STS sessions; a reboot deletes them
+  $XDG_RUNTIME_DIR/awsv/NAME          cached STS sessions; logout or reboot deletes them
   ~/.aws/config                       awsv writes only between its two marker lines
 
 ENVIRONMENT
   AWSV_HOME              the vault directory. Default: ~/.local/share/awsv
-  AWSV_RUN               the session cache. Default: /run/awsv
+  AWSV_RUN               the session cache. Default: $XDG_RUNTIME_DIR/awsv.
+                         For root without it: /run/awsv. Set it empty to turn the cache off.
   AWSV_SESSION_SECONDS   the length of an STS session. Default: 3600
   NO_COLOR               set it to turn the colours off
 
@@ -102,6 +125,8 @@ TOPICS
   setup  migrate  add  switch  rotate  remove  iam  locked  check  lock  reboot  forgot  uninstall
 
 @ setup | First setup on a new machine
+  Each user has their own vault, passphrase and [default]. Do every step as yourself.
+  Do not run awsv through sudo: sudo can change HOME, and awsv then uses another user's files.
   1. Install the command. The installer checks the components first.
     $ ./install.sh
      Run it in the awsv repository.
@@ -331,10 +356,19 @@ aws_with() {   # AKID SECRET TOKEN(or "") -- aws arguments
     )
 }
 
+# The only two places that build a cache path. With no cache both do nothing:
+# no path is ever made from an empty AWSV_RUN.
+cache_file() { [ -n "$AWSV_RUN" ] && printf '%s/%s\n' "$AWSV_RUN" "$1"; }
+drop_cache() {   # NAME, or no argument for every session
+    [ -n "$AWSV_RUN" ] && [ -d "$AWSV_RUN" ] || return 0
+    if [ -n "${1:-}" ]; then rm -f -- "$AWSV_RUN/$1"; else rm -f -- "$AWSV_RUN"/*; fi
+}
+
 session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or from STS
-    local name="$1" cache="$AWSV_RUN/$1" now exp out errf region
+    local name="$1" cache now exp out errf region
+    cache="$(cache_file "$name")"
     now="$(date +%s)"
-    if [ -f "$cache" ]; then
+    if [ -n "$cache" ] && [ -f "$cache" ]; then
         { read -r SAKID; read -r SSECRET; read -r STOKEN; read -r SEXP; } < "$cache"
         exp="$(date -d "$SEXP" +%s 2>/dev/null || echo 0)"
         [ "$exp" -gt $((now + 300)) ] && return 0       # still valid for 5 minutes
@@ -351,9 +385,13 @@ session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or
     rm -f "$errf"
     read -r SAKID SSECRET STOKEN SEXP <<< "$out"
     [ -n "$STOKEN" ] || die "STS returned no session for '$name'"
-    mkdir -p "$AWSV_RUN"; chmod 700 "$AWSV_RUN"
-    printf '%s\n%s\n%s\n%s\n' "$SAKID" "$SSECRET" "$STOKEN" "$SEXP" > "$cache.tmp"
-    mv -f "$cache.tmp" "$cache"
+    # The cache is an optimisation: when it cannot be written, the session is
+    # still returned, and the next call asks STS again.
+    if [ -n "$cache" ] && mkdir -p "$AWSV_RUN" 2>/dev/null && chmod 700 "$AWSV_RUN" 2>/dev/null; then
+        printf '%s\n%s\n%s\n%s\n' "$SAKID" "$SSECRET" "$STOKEN" "$SEXP" > "$cache.tmp" 2>/dev/null \
+            && mv -f "$cache.tmp" "$cache"
+    fi
+    return 0
 }
 
 # ------------------------------------------------------------ ~/.aws/config
@@ -522,7 +560,7 @@ store() {   # NAME REGION MODE — AKID and SECRET are set
         meta_set "$name" arn "$(printf '%s' "$id" | awk '{print $2}')"
     fi
     [ -n "$(active)" ] || printf '%s\n' "$name" > "$AWSV_HOME/active"
-    rm -f "$AWSV_RUN/$name"
+    drop_cache "$name"
     write_config
     ok "stored $name — $mode mode, $region${id:+, $(meta_get "$name" arn)}"
     [ "$(active)" = "$name" ] && say "  ${B}it is the [default] profile now${N}"
@@ -628,7 +666,7 @@ cmd_set() {
     [ -n "$REGION$MODE" ] || die "nothing to change: give --region or --mode"
     [ -z "$REGION" ] || meta_set "$name" region "$REGION"
     [ -z "$MODE" ] || meta_set "$name" mode "$MODE"
-    rm -f "$AWSV_RUN/$name"
+    drop_cache "$name"
     write_config
     ok "$name: $(meta_get "$name" mode) mode, $(meta_get "$name" region)"
 }
@@ -649,7 +687,8 @@ cmd_rm() {
         read -rp "${R}${B}Delete $name${N} ($(meta_get "$name" arn)) from the vault? [y/N] " a
         [ "$a" = y ] || [ "$a" = Y ] || die "nothing deleted"
     fi
-    rm -f "$KEYS/$name.gpg" "$META/$name" "$AWSV_RUN/$name"
+    rm -f "$KEYS/$name.gpg" "$META/$name"
+    drop_cache "$name"
     [ "$(active)" = "$name" ] && : > "$AWSV_HOME/active"
     write_config
     ok "removed $name"
@@ -698,7 +737,7 @@ cmd_unlock() {
 
 cmd_lock() {
     gpgconf --reload gpg-agent
-    rm -f "$AWSV_RUN"/* 2>/dev/null
+    drop_cache
     ok "locked: the agent forgot the passphrase and every cached session is deleted"
 }
 
@@ -716,7 +755,12 @@ cmd_status() {
             *) say "agent:        ${Y}locked${N} — the next use asks for the passphrase (awsv unlock)" ;;
         esac
     fi
-    for f in "$AWSV_RUN"/*; do
+    if [ -n "$AWSV_RUN" ]; then
+        say "cache:        $AWSV_RUN"
+    else
+        say "cache:        ${Y}none${N} — no private tmpfs, so every call asks STS for a session"
+    fi
+    for f in ${AWSV_RUN:+"$AWSV_RUN"/*}; do
         [ -f "$f" ] || continue
         n="$(basename "$f")"; exp="$(sed -n 4p "$f")"
         say "session:      ${C}$n${N} until $(date -d "$exp" '+%H:%M %Z' 2>/dev/null || echo "$exp")"
