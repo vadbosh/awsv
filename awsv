@@ -2,40 +2,8 @@
 #
 # awsv — keep AWS access keys in a GPG-encrypted vault, not in ~/.aws/credentials.
 #
-#   awsv init [--take-default]       create the GPG key and the agent settings, once
-#   awsv add NAME [options]          type a new key in; AWS checks it, then it is stored
-#   awsv import SECTION [options]    move a section of ~/.aws/credentials into the vault
-#   awsv ls                          list the accounts in the vault
-#   awsv use NAME                    make NAME the [default] profile
-#   awsv set NAME [--region R] [--mode M]
-#   awsv rekey NAME                  replace the key of an account
-#   awsv rm NAME [--yes]             delete an account from the vault and the config
-#   awsv exec NAME -- CMD [ARGS]     run one command as NAME; [default] does not change
-#   awsv unlock                      ask for the GPG passphrase now, in this terminal
-#   awsv lock                        forget the passphrase and every cached session
-#   awsv status                      active account, lock state, keys left in plain text
-#   awsv creds NAME                  called by ~/.aws/config; prints credentials as JSON
-#
-# Options for add and import:
-#   --region R      the region of the profile; default us-east-1
-#   --mode M        session (default): every tool gets a temporary STS session of
-#                   AWSV_SESSION_SECONDS (3600). The stored key does not leave awsv.
-#                   direct: every tool gets the stored key itself. Use it when a tool
-#                   calls the IAM API: an STS session made without MFA cannot do that.
-#   --no-verify     store the key without asking AWS first
-#   --stdin         add and rekey: read the key id and the secret from two lines
-#   --as NAME       import: store under this name; the section name is the default.
-#                   The section "default" needs --as, because "default" is reserved.
-#   --keep          import: leave the section in ~/.aws/credentials
-#
-# How it works. Each account is one file, keys/NAME.gpg, encrypted to one GPG key.
-# The private part of that key is protected by one passphrase. gpg-agent keeps the
-# passphrase in memory after the first use, for the time set in gpg-agent.conf.
-# ~/.aws/config gets a block that awsv rewrites itself: [default] and one
-# [profile NAME] per account, each with "credential_process = awsv creds NAME".
-# The AWS CLI, the SDKs and Terraform run that command to get credentials.
-# When the agent is locked and there is no terminal to ask on, the command fails:
-# access closes by itself instead of staying open.
+# The user guide is built in: 'awsv help', or 'awsv help TOPIC' for one situation
+# step by step. Its text is help_text() below — edit it there, not here.
 
 set -uo pipefail
 umask 077
@@ -73,7 +41,218 @@ die()  { printf '%sawsv: %s%s\n' "$ER$EB" "$*" "$EN" >&2; exit 1; }
 warn() { printf '%s%s%s\n' "$EY" "$*" "$EN" >&2; }
 ok()   { printf '%s%s%s\n' "$G" "$*" "$N"; }
 say()  { printf '%s\n' "$*"; }
-usage() { sed -n '2,/^$/s/^# \{0,1\}//p' "$SELF"; exit 0; }
+help_text() {
+cat <<'EOF'
+awsv keeps AWS access keys in a GPG-encrypted vault, not in ~/.aws/credentials.
+The AWS CLI, the SDKs and Terraform get the keys through credential_process.
+
+USAGE
+  awsv COMMAND [ARGS]
+  awsv help TOPIC          one situation, step by step
+  awsv help                everything on this page
+
+COMMANDS
+  init [--take-default]    Create the GPG key and the agent settings. Run it once.
+  add NAME [options]       Type a new key in. AWS checks it, then awsv stores it.
+  import SECTION [options] Move a section of ~/.aws/credentials into the vault.
+  ls                       List the accounts. A star marks the [default] one.
+  use NAME                 Make NAME the [default] profile.
+  set NAME [options]       Change the region or the mode of an account.
+  rekey NAME               Replace the key of an account.
+  rm NAME [--yes]          Delete an account from the vault and from the config.
+  exec NAME -- CMD [ARGS]  Run one command as NAME. [default] does not change.
+  unlock                   Type the GPG passphrase now, in this terminal.
+  lock                     Forget the passphrase and every cached session.
+  status                   Show the active account, the lock and any plain-text keys.
+  creds NAME               Print the credentials as JSON for ~/.aws/config.
+                           You do not run it yourself.
+
+OPTIONS
+  --region R       add, import, set: the region of the profile. Default: us-east-1.
+  --mode M         add, import, set: session (default) or direct. See: awsv help iam
+  --no-verify      add, import, rekey: store the key without a check against AWS.
+  --stdin          add, rekey: read the key id and the secret from two lines of input.
+  --as NAME        import: store under this name. The section "default" needs it.
+  --keep           import: leave the section in ~/.aws/credentials.
+  --yes            rm: delete without a question.
+
+HOW IT WORKS
+  Each account is one file, encrypted to one GPG key. One passphrase opens them all.
+  gpg-agent keeps the passphrase in memory for 8 hours after you type it.
+  awsv writes a block into ~/.aws/config: [default] and one [profile NAME] per account.
+  Each of them calls "awsv creds NAME" through credential_process.
+  In session mode awsv gives out an STS session of one hour. The stored key stays inside awsv.
+  In direct mode awsv gives out the stored key itself.
+  When the agent is locked and no terminal can ask for the passphrase, the call fails.
+
+FILES
+  ~/.local/share/awsv/keys/NAME.gpg   the encrypted keys, one file per account
+  ~/.local/share/awsv/meta/NAME       region, mode, account id and ARN; not secret
+  ~/.local/share/awsv/backup/         earlier config files, encrypted credentials files
+  /run/awsv/NAME                      cached STS sessions; a reboot deletes them
+  ~/.aws/config                       awsv writes only between its two marker lines
+
+ENVIRONMENT
+  AWSV_HOME              the vault directory. Default: ~/.local/share/awsv
+  AWSV_RUN               the session cache. Default: /run/awsv
+  AWSV_SESSION_SECONDS   the length of an STS session. Default: 3600
+  NO_COLOR               set it to turn the colours off
+
+TOPICS
+  setup  migrate  add  switch  rotate  remove  iam  locked  check  lock  reboot  forgot  uninstall
+
+@ setup | First setup on a new machine
+  1. Install the command. The installer checks the components first.
+    $ ./install.sh
+     Run it in the awsv repository.
+  2. Create the GPG key. awsv asks for a passphrase twice.
+    $ awsv init
+     Choose five or six random words. Keep them in your password manager, not on this machine.
+  3. Open a new terminal. init added GPG_TTY to ~/.bashrc, and gpg needs it to ask you.
+  Next: awsv help migrate for keys you have, or awsv help add for a new one.
+
+@ migrate | Move the keys from ~/.aws/credentials into the vault
+  1. Let awsv take over [default] in ~/.aws/config. It comments the old one out and keeps a copy.
+    $ awsv init --take-default
+     Skip this step when the config has no [default] and no [profile default].
+  2. Move the [default] section. The name "default" is reserved, so give it another one.
+    $ awsv import default --as work
+  3. Move every other section by its name. A commented-out #[name] section works too.
+    $ awsv import nexum
+  4. Check that no key is left in plain text.
+    $ awsv status
+     "plain text: no keys left" means the move is complete.
+     A red WARNING means keys are still in the file. Import them too.
+  Each import checks the key against AWS first. When AWS rejects it, nothing changes.
+  Each import keeps an encrypted copy of the credentials file in the backup directory.
+  A key left in ~/.aws/credentials wins over the vault for its profile.
+
+@ add | A new AWS account
+  1. Create an access key for the IAM user in the AWS console, or get one from your administrator.
+  2. Store it. The secret does not show on the screen as you type it.
+    $ awsv add NAME --region eu-central-1
+  3. The first account becomes [default] by itself. For any later one:
+    $ awsv use NAME
+  Do not paste the key into ~/.aws/credentials first. awsv add reads it from the terminal.
+
+@ switch | Change the default account, or use another one once
+  Make another account the [default] profile. This replaces commenting sections in and out.
+    $ awsv use NAME
+  Use another account for one command. [default] does not change.
+    $ aws --profile NAME s3 ls
+    $ awsv exec NAME -- terraform plan
+  Show which account is [default]:
+    $ awsv ls
+
+@ rotate | Replace the key of an account
+  1. Create a new access key for the IAM user. An IAM user can have two keys at a time.
+  2. Store the new key. AWS checks it before awsv replaces the old one.
+    $ awsv rekey NAME
+  3. Deactivate the old key in IAM. The vault no longer has it, but AWS still accepts it.
+  4. Delete the old key in IAM after some days without errors.
+
+@ remove | Remove an account
+  1. Delete the account from the vault and from ~/.aws/config.
+    $ awsv rm NAME
+  2. When it was [default], choose another one.
+    $ awsv use OTHER
+  3. Deactivate the key in IAM. Removal from the vault does not revoke it in AWS.
+
+@ iam | A tool gets AccessDenied on IAM API calls
+  In session mode every tool gets an STS session.
+  AWS refuses IAM API calls from an STS session that was made without MFA.
+  Terraform that creates roles, users or policies fails this way.
+  1. Switch the account to direct mode. Tools then get the stored key itself.
+    $ awsv set NAME --mode direct
+  2. Run the tool again.
+  The key stays encrypted on disk in both modes.
+  The difference: in session mode, a credential that leaks expires within an hour.
+
+@ locked | "Error when retrieving credentials from custom-process"
+  The vault is locked, and the command had no terminal to ask for the passphrase.
+  This happens after the 8 hours of the agent, after a reboot, and after awsv lock.
+  1. Unlock it in a terminal.
+    $ awsv unlock
+  2. Run the command again.
+  A command that an assistant or a script runs has no terminal.
+  Unlock in your own terminal. The assistant and the scripts can then use the vault too.
+  When the message says "STS refused" instead, the key itself is the problem: awsv help rotate
+
+@ check | Check that the vault is really in use
+  1. Read the state.
+    $ awsv status
+     Read four lines: [default], agent, session and plain text.
+  2. Ask the AWS CLI where its key comes from.
+    $ aws configure list
+     The access_key line must show custom-process.
+     shared-credentials-file means the key came from ~/.aws/credentials, not from the vault.
+  3. Ask AWS who you are.
+    $ aws sts get-caller-identity
+     It prints the account and the user. Compare them with what you expect.
+
+@ lock | Lock the vault before you leave
+    $ awsv lock
+  The agent forgets the passphrase, and awsv deletes every cached session.
+  The next aws command asks for the passphrase again.
+
+@ reboot | After a reboot
+  You do not need to do anything.
+  The agent starts locked, and the session cache is empty.
+  The first aws command in a terminal asks for the passphrase.
+  A command without a terminal fails until you unlock. See: awsv help locked
+
+@ forgot | A forgotten passphrase
+  Nothing opens the vault without the passphrase. The way back is a new key for every account.
+  1. Delete each account from the vault. This step needs no passphrase.
+    $ awsv rm NAME --yes
+  2. Delete the old GPG key. gpg asks you to confirm.
+    $ gpg --delete-secret-and-public-key "awsv local vault"
+  3. Create a new GPG key with a new passphrase.
+    $ awsv init
+  4. Create new access keys in IAM, then store each one.
+    $ awsv add NAME
+  5. Deactivate the old keys in IAM.
+
+@ uninstall | Remove the awsv command
+  The installer refuses while ~/.aws/config still calls awsv. Every aws command would fail.
+  1. Remove the accounts first, or give your tools another source of credentials.
+  2. Run the installer in the awsv repository.
+    $ ./install.sh --uninstall
+  The vault in ~/.local/share/awsv stays. Delete it yourself when you do not need it.
+EOF
+}
+
+topics() { help_text | sed -n 's/^@ \([a-z]*\) |.*/\1/p' | tr '\n' ' '; }
+
+# Headings in bold and commands in colour on a terminal. "@ topic | title" opens
+# a situation; "    $ command" is a line to type. With a TOPIC, only that one.
+render_help() {
+    help_text | awk -v t="${1:-}" -v b="$B" -v c="$C" -v n="$N" '
+        /^@ / {
+            h = substr($0, 3); i = index(h, " | ")
+            sec = substr(h, 1, i - 1); title = substr(h, i + 3)
+            show = (t == "" || t == sec); if (t == sec) found = 1
+            if (show) { if (t == "") print ""; printf "%s%s — %s%s\n", b, sec, title, n }
+            next
+        }
+        t != "" && sec == "" { next }       # with a topic, skip the general part
+        sec != "" && !show { next }
+        /^    \$ / { l = $0; sub(/^    \$ /, "", l); printf "    %s%s%s\n", c, l, n; next }
+        /^[A-Z][A-Z ]+$/ { printf "%s%s%s\n", b, $0, n; next }
+        { print }
+        END { if (t != "" && !found) exit 3 }'
+}
+
+cmd_help() {
+    local topic="${1:-}"
+    if [ -n "$topic" ]; then
+        render_help "$topic" || die "no help topic '$topic' — topics: $(topics)"
+    elif [ -t 1 ] && command -v less >/dev/null 2>&1; then
+        render_help "" | less -RFX
+    else
+        render_help ""
+    fi
+}
 
 # ---------------------------------------------------------------- helpers
 
@@ -568,6 +747,6 @@ case "$cmd" in
     unlock) cmd_unlock ;;
     lock)   cmd_lock ;;
     status) cmd_status ;;
-    ""|-h|--help|help) usage ;;
+    ""|-h|--help|help) cmd_help "$@" ;;
     *)      die "unknown command '$cmd' (try --help)" ;;
 esac

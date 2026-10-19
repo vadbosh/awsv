@@ -126,6 +126,12 @@ t "add from stdin" 0 sh -c "awsv add other --stdin --no-verify --mode direct < '
 t "add twice refused" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
 t "help" 0 awsv --help
 has "help lists init" 'awsv init' "$T/out"
+yes_ [ "$(grep -cE '^[a-z]+ — ' "$T/out")" = 13 ]   # every situation is in the full help
+t "help topic" 0 awsv help migrate
+has "the topic gives its steps" 'awsv import default --as' "$T/out"
+hasnt "a topic shows only itself" '^COMMANDS' "$T/out"
+t "unknown topic" 1 awsv help nosuch
+has "and lists the real ones" 'topics: setup' "$T/out"
 
 # ----------------------------------------------------------------- status
 t "status" 0 awsv status
