@@ -80,7 +80,7 @@ Both can live in one vault. For example, everyday accounts share one
 passphrase, and `prod` has its own:
 
 ```bash
-awsv set prod --lock own        # asks for the current passphrase, then a new one for prod
+awsv set prod --lock own        # step 1: the shared passphrase, step 2: a new one for prod
 awsv unlock 8h                  # the passphrase of the [default] account, for the day
 awsv unlock prod 30m            # prod only, for half an hour
 awsv lock prod                  # close prod; the others stay open
@@ -88,12 +88,31 @@ awsv passwd prod                # change the passphrase of prod only
 awsv set prod --lock shared     # back to the shared passphrase
 ```
 
+In step 1 gpg asks nothing when the shared passphrase is already in memory. If
+`set --lock` stops or fails half-way, the account stays on its old passphrase.
+
+A new account can get its own passphrase at once:
+
+```bash
+awsv add prod --region eu-central-1 --lock own    # type the key, then choose the passphrase of prod, twice
+awsv import client --lock own                     # the same for a section of ~/.aws/credentials
+```
+
 To give every new account its own passphrase, run `awsv init --lock own`.
 Accounts already in the vault keep theirs. One account can still take the
 shared passphrase: `awsv add NAME --lock shared`.
 
-To open everything at the start of the day, run `awsv unlock all 8h`. It asks
-for each passphrase once: the shared one first, then each own one.
+### Do I unlock every account?
+
+You unlock every passphrase, not every account. One `awsv unlock` opens all
+accounts on the shared passphrase; each account with its own passphrase needs
+its own `awsv unlock NAME`. To open everything at the start of the day, run
+`awsv unlock all 8h`. It asks for each passphrase once: the shared one first,
+then each own one.
+
+In your own terminal you can skip `unlock`: the first `aws` command in a locked
+account asks for its passphrase. Cron jobs, scripts and AI assistants have no
+terminal to ask in. Open the account for them before they start.
 
 `awsv status` shows two lines in each account's block. `lock` says which
 passphrase opens the account. `state` says whether it is open now and gives the

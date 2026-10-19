@@ -133,6 +133,7 @@ FILES
     $ awsv import nexum --lock own      # nexum gets a passphrase of its own
     $ awsv status                       # repeat imports until "no keys left"
   The section leaves the file. An encrypted copy of the file goes to backup/.
+  With a passphrase of its own, import asks you to choose it, twice.
 
 @ ls | list the accounts
     $ awsv ls                           # * marks [default]; then mode, lock, region, account
@@ -154,7 +155,8 @@ FILES
     $ awsv set nexum --lock shared      # nexum goes back to the shared passphrase
   Use direct for Terraform. A session made without MFA cannot call the IAM API.
   A session also needs the account open again when it expires during a long run.
-  --lock asks for the current passphrase of the account, then for the new one.
+  --lock asks two things: first the passphrase that opens the account now,
+  then the new one. Stopped or failed half-way, the account stays as it was.
 
 @ rekey | replace the key of an account
     $ awsv rekey work                   # type the new key from IAM; AWS checks it first
@@ -233,6 +235,11 @@ FILES
   Open everything in the morning, close it in the evening:
     $ awsv unlock all 8h                # asks each passphrase once
     $ awsv lock                         # closes every passphrase
+
+  unlock is per passphrase, not per account: one unlock for the shared one,
+  one for each account with its own. In your own terminal unlock is optional:
+  the first aws command in a locked account asks for its passphrase.
+  Cron, scripts and assistants have no terminal: open the account for them first.
   ! A shared passphrase opens every account on it: awsv unlock work 30m opens them all.
   ! awsv status shows, for each account, which passphrase opens it and whether it is open.
 EOF
@@ -793,8 +800,10 @@ relock() {   # NAME LOCK
     old="$(lock_of "$name")"
     if [ "$2" = "$old" ]; then say "$name is on the $2 lock already"; return 0; fi
     [ -t 0 ] && { GPG_TTY="$(tty)"; export GPG_TTY; }
-    say "Opening $name with its current passphrase."
+    if [ "$old" = own ]; then say "${B}Step 1 of 2:${N} type the passphrase of $name, if gpg asks."
+    else say "${B}Step 1 of 2:${N} type the shared passphrase, if gpg asks. When it is in memory, gpg asks nothing."; fi
     decrypt_key "$name"
+    [ "$2" = own ] && say "${B}Step 2 of 2:${N} choose the new passphrase of $name."
     encrypt_key "$name" "$2"
     meta_set "$name" lock "$2"
     unset AKID SECRET
