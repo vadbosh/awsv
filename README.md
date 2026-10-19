@@ -63,15 +63,14 @@ awsv status                      # done when it says "no keys left"
 
 What each step does:
 
-1. `init` creates a GPG key and asks you for its passphrase. Inside gpg the
-   key is named "awsv local vault". That is a name, not a command.
+1. `init` creates a GPG key in `~/.gnupg` and asks you for its passphrase.
    `--take-default` comments out the old `[default]` in `~/.aws/config`,
    because awsv writes its own.
 2. `import` reads one section, checks the key against AWS, encrypts it and
    removes the section from `~/.aws/credentials`. A commented-out `#[client]`
    section works too.
 3. The section `[default]` needs `--as` with a real name. In awsv, "default" is
-   not an account. It is a role: the account that `awsv use` selected.
+   not an account. It is a role: the account that `awsv use NAME` selected.
 4. `status` lists what is left. Import every section until it says
    `no keys left`.
 
@@ -106,7 +105,11 @@ AWS checks the key before awsv stores it. The first account becomes `[default]`.
 | close the vault now | `awsv lock` |
 | check that everything is right | `awsv status` |
 
-`awsv help` prints all commands with examples. `awsv help COMMAND` prints one.
+`NAME`, `SECTION` and `REGION` are yours to fill in: an account name such as
+`work`, a section name from `~/.aws/credentials`, an AWS region such as
+`eu-central-1`.
+
+`awsv help` prints all commands with examples. `awsv help add` prints one.
 
 ## Where things are
 
@@ -140,7 +143,7 @@ encrypted. The block in `~/.aws/config` has `[default]` and one
 
 ### Do not put keys into `~/.aws/credentials`
 
-A new key goes into the vault with `awsv add`, which reads it from the
+A new key goes into the vault with `awsv add NAME`, which reads it from the
 terminal. When some tool writes a key into `~/.aws/credentials` by itself, move
 it with `awsv import SECTION`. Until then `awsv status` shows a red `WARNING`.
 
@@ -158,13 +161,13 @@ say `custom-process`.
 
 ### Removing an account does not revoke its key
 
-`awsv rm` deletes the encrypted file and the profile. The key itself still works
+`awsv rm NAME` deletes the encrypted file and the profile. The key itself still works
 in AWS. Deactivate it in IAM when you no longer need it. The same holds for the
-old key after `awsv rekey`.
+old key after `awsv rekey NAME`.
 
 ### Session mode or direct mode
 
-Each account has a mode. `awsv ls` shows it, `awsv set NAME --mode …` changes it.
+Each account has a mode. `awsv ls` shows it, `awsv set NAME --mode direct` or `--mode session` changes it.
 
 | | session (the default) | direct |
 |---|---|---|
@@ -232,7 +235,7 @@ Nothing opens the vault without it. The way back is a new key for every account:
 
 ```bash
 awsv rm work --yes                                     # for each account; needs no passphrase
-gpg --delete-secret-and-public-key "awsv local vault"  # the old GPG key
+gpg --delete-secret-and-public-keys "awsv local vault"  # the old GPG key
 awsv init                                              # a new GPG key, a new passphrase
 awsv add work --region eu-central-1                    # with a new key from IAM
 ```
@@ -278,8 +281,13 @@ is complete and everything works.
 ## Tests
 
 ```bash
-./tests/test_awsv.sh
+./tests/test_awsv.sh             # the commands themselves
+./tests/test_docs_commands.sh    # every command the help and this file show you
 ```
+
+The second test collects every `awsv …` from the help, this file, the status
+output and the messages of awsv, and runs each one. A text that looks like a
+command but is not one fails the test.
 
 It runs in a temporary home directory with fake keys. Your vault, `~/.aws` and
 gpg-agent are not touched. One check calls AWS STS with a fake key;

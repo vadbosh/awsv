@@ -2,8 +2,8 @@
 #
 # awsv — keep AWS access keys in a GPG-encrypted vault, not in ~/.aws/credentials.
 #
-# The user guide is built in: 'awsv help', or 'awsv help TOPIC' for one situation
-# step by step. Its text is help_text() below — edit it there, not here.
+# The user guide is built in: 'awsv help', or 'awsv help COMMAND' for one command
+# with its examples. Its text is help_text() below — edit it there, not here.
 
 set -uo pipefail
 umask 077
@@ -71,6 +71,9 @@ You type one passphrase, and the vault stays open for 8 hours.
 
   awsv help COMMAND    one command and its example
   awsv help            this page
+
+  Words in capitals are yours to fill in: NAME is an account name such as work,
+  SECTION is a section of ~/.aws/credentials, REGION is an AWS region.
 
 START HERE
     $ ./install.sh                        # in the awsv repository: check the parts, install
@@ -211,7 +214,7 @@ valid_name() {
     [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] \
         || die "bad name '$1': use lowercase letters, digits, '-' and '_', up to 32"
     [ "$1" != default ] \
-        || die "'default' is reserved: it is the account that 'awsv use' selected"
+        || die "'default' is reserved: it is the account that 'awsv use NAME' selected"
 }
 valid_region() { [[ "$1" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "bad region '$1'"; }
 valid_mode()   { [ "$1" = session ] || [ "$1" = direct ] || die "mode is 'session' or 'direct', not '$1'"; }
@@ -502,7 +505,7 @@ cmd_init() {
     mkdir -p "$KEYS" "$META" "$BACKUP"; chmod 700 "$AWSV_HOME"
     if [ -z "$(fpr)" ]; then
         need_tty "creating the GPG key"
-        say "Creating the GPG key '$GPG_UID'."
+        say "Creating the GPG key that will encrypt the vault."
         say "${Y}${B}Choose its passphrase now.${N} ${B}It is the one password for every account in the vault.${N}"
         gpg --quick-generate-key "$GPG_UID" future-default default never >/dev/null \
             || die "the key was not created"
@@ -705,7 +708,7 @@ cmd_status() {
     if [ -z "$(fpr)" ]; then
         say "  GPG key   ${Y}none${N} — create it: awsv init"
     else
-        say "  GPG key   $(fpr | tail -c 17) — encrypts every file in keys/; its name in gpg is \"$GPG_UID\""
+        say "  GPG key   $(fpr | tail -c 17) in ~/.gnupg — encrypts every file in keys/. Change its passphrase with: awsv passwd"
         g="$(grip)"
         st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
         if [ "$st" = 1 ]; then
@@ -771,9 +774,9 @@ cmd_status() {
         fi
         say "    key file  $KEYS/$n.gpg"
         if [ "$n" = "$act" ]; then
-            say "    run       ${C}aws ...${N}"
+            say "    try       ${C}aws sts get-caller-identity${N}   ${D}— plain aws uses this account${N}"
         else
-            say "    run       ${C}aws --profile $n ...${N}   or make it [default]: ${C}awsv use $n${N}"
+            say "    try       ${C}aws --profile $n sts get-caller-identity${N}   ${D}— or make it [default]: awsv use $n${N}"
         fi
     done
     [ "$count" -gt 0 ] || say "  ${D}(none yet — awsv add NAME, or awsv import SECTION)${N}"

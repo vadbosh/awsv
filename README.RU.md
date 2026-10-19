@@ -61,13 +61,13 @@ awsv status                      # готово, когда видно «no keys
 
 Что делает каждый шаг:
 
-1. `init` создаёт ключ GPG и просит придумать к нему пароль. Внутри gpg ключ
-   называется «awsv local vault» — это имя, а не команда. `--take-default`
-   закомментирует прежний `[default]` в `~/.aws/config`: awsv пишет туда свой.
+1. `init` создаёт ключ GPG в `~/.gnupg` и просит придумать к нему пароль.
+   `--take-default` закомментирует прежний `[default]` в `~/.aws/config`: awsv
+   пишет туда свой.
 2. `import` читает одну секцию, сверяет ключ с AWS, шифрует его и удаляет секцию
    из `~/.aws/credentials`. Закомментированная секция `#[client]` тоже подходит.
 3. Секции `[default]` нужно настоящее имя через `--as`. В awsv «default» — не
-   аккаунт, а роль: тот аккаунт, который выбран командой `awsv use`.
+   аккаунт, а роль: тот аккаунт, который выбран командой `awsv use NAME`.
 4. `status` показывает, что осталось. Переносите секции, пока не увидите
    `no keys left`.
 
@@ -103,7 +103,10 @@ aws sts get-caller-identity            # покажет аккаунт и пол
 | закрыть сейф сейчас | `awsv lock` |
 | проверить, что всё в порядке | `awsv status` |
 
-`awsv help` выводит все команды с примерами, `awsv help КОМАНДА` — одну.
+`NAME`, `SECTION` и `REGION` подставляете вы: имя аккаунта, например `work`,
+имя секции из `~/.aws/credentials`, регион AWS, например `eu-central-1`.
+
+`awsv help` выводит все команды с примерами, `awsv help add` — одну.
 
 ## Где что лежит
 
@@ -137,9 +140,9 @@ aws sts get-caller-identity            # покажет аккаунт и пол
 
 ### Ключи не кладутся в `~/.aws/credentials`
 
-Новый ключ попадает в сейф через `awsv add`: команда читает его из терминала.
+Новый ключ попадает в сейф через `awsv add NAME`: команда читает его из терминала.
 Если какая-то утилита сама записала ключ в `~/.aws/credentials`, перенесите его
-командой `awsv import СЕКЦИЯ`. Пока ключ там, `awsv status` показывает красный
+командой `awsv import SECTION`. Пока ключ там, `awsv status` показывает красный
 `WARNING`.
 
 ### Пустой `~/.aws/credentials` — это правильно
@@ -156,14 +159,14 @@ AWS CLI сначала читает `~/.aws/credentials`, и к awsv обращ�
 
 ### Удаление аккаунта не отзывает ключ
 
-`awsv rm` удаляет зашифрованный файл и профиль, но в AWS ключ продолжает
+`awsv rm NAME` удаляет зашифрованный файл и профиль, но в AWS ключ продолжает
 работать. Если он больше не нужен, деактивируйте его в IAM. То же касается
-старого ключа после `awsv rekey`.
+старого ключа после `awsv rekey NAME`.
 
 ### Режим session или direct
 
 У каждого аккаунта есть режим. Его видно в `awsv ls`, а меняется он командой
-`awsv set NAME --mode …`.
+`awsv set NAME --mode direct` или `--mode session`.
 
 | | session (по умолчанию) | direct |
 |---|---|---|
@@ -231,7 +234,7 @@ awsv passwd
 
 ```bash
 awsv rm work --yes                                     # для каждого аккаунта; пароль не нужен
-gpg --delete-secret-and-public-key "awsv local vault"  # старый ключ GPG
+gpg --delete-secret-and-public-keys "awsv local vault"  # старый ключ GPG
 awsv init                                              # новый ключ GPG и новый пароль
 awsv add work --region eu-central-1                    # с новым ключом из IAM
 ```
@@ -266,8 +269,8 @@ awsv add work --region eu-central-1                    # с новым ключ�
 | `Error when retrieving credentials from custom-process: awsv: cannot open 'NAME'` | сейф заперт, а у команды не было терминала | `awsv unlock` в своём терминале |
 | `STS refused a session for 'NAME'` | AWS не принимает сохранённый ключ | проверить ключ в IAM; `awsv rekey NAME` |
 | `AccessDenied` на вызовах IAM, чаще от Terraform | аккаунт в режиме session | `awsv set NAME --mode direct` |
-| красный `WARNING` в `awsv status` | ключ остался в `~/.aws/credentials` | `awsv import СЕКЦИЯ` |
-| `aws configure list` показывает `shared-credentials-file` | ключ остался в `~/.aws/credentials`, и он главнее сейфа | `awsv import СЕКЦИЯ` |
+| красный `WARNING` в `awsv status` | ключ остался в `~/.aws/credentials` | `awsv import SECTION` |
+| `aws configure list` показывает `shared-credentials-file` | ключ остался в `~/.aws/credentials`, и он главнее сейфа | `awsv import SECTION` |
 | `~/.aws/config already defines [default] outside the awsv block` | в конфиге есть свой `[default]` | `awsv init --take-default` |
 | `show prints a secret, so it runs only in a terminal` | `show` запущена в трубе или скрипте | запустить в своём терминале |
 | `no session cache` от `./install.sh` | не задана `XDG_RUNTIME_DIR` | ничего: каждый вызов пойдёт в STS, чуть медленнее |
@@ -275,8 +278,13 @@ awsv add work --region eu-central-1                    # с новым ключ�
 ## Тесты
 
 ```bash
-./tests/test_awsv.sh
+./tests/test_awsv.sh             # сами команды
+./tests/test_docs_commands.sh    # каждая команда, которую показывают справка и этот файл
 ```
+
+Второй тест собирает каждое `awsv …` из справки, этого файла, вывода `status` и
+сообщений awsv и запускает его. Текст, который выглядит как команда, но ею не
+является, тест не пропустит.
 
 Тесты работают во временном домашнем каталоге с поддельными ключами. Ваш сейф,
 `~/.aws` и gpg-agent они не трогают. Одна проверка обращается к AWS STS с
