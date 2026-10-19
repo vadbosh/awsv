@@ -460,7 +460,7 @@ take_default() {   # comment out [default] and [profile default] outside the blo
         /^[[:space:]]*#?[[:space:]]*\[/ {
             cur = ($0 ~ /^[[:space:]]*\[(profile[[:space:]]+)?default\]/)
         }
-        cur {print "# awsv: " $0; next}
+        cur && NF {print "# awsv: " $0; next}   # a blank line stays blank
         {print}' "$CONFIG" > "$CONFIG.tmp" && mv -f "$CONFIG.tmp" "$CONFIG"
 }
 

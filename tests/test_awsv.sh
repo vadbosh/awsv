@@ -2,7 +2,9 @@
 # Tests for awsv and install.sh.
 #
 # Everything runs in a throwaway HOME, GNUPGHOME and session directory: the real
-# GPG key, ~/.aws and gpg-agent are never touched. The keys are fake.
+# GPG key, ~/.aws and gpg-agent are never touched. The key ids are zeros, AKIA plus
+# 12 characters: awsv accepts 12 or more, a real id has 16, and scanners look for
+# exactly AKIA plus 16 — so nothing here reads as a leaked key.
 # One call to AWS STS with a fake key proves the credentials reach AWS through
 # credential_process; AWSV_TEST_NETWORK=0 skips the calls that need the network.
 set -uo pipefail
@@ -50,7 +52,7 @@ gpg --batch --pinentry-mode loopback --passphrase '' \
 # an active [default] and a commented #[nexum] in the credentials file.
 printf '[profile default]\noutput = json\nregion = us-east-1\n\n#[sso-session thoth]\n#sso_region = us-east-1\n' \
     > "$AWS_CONFIG_FILE"
-printf '[default]\naws_access_key_id = AKIAFAKEDEFAULT00001\naws_secret_access_key = fake-secret-default\n\n#[nexum]\n#aws_access_key_id = AKIAFAKENEXUM000002\n#aws_secret_access_key = fake-secret-nexum\n' \
+printf '[default]\naws_access_key_id = AKIA000000000001\naws_secret_access_key = 0000000000\n\n#[nexum]\n#aws_access_key_id = AKIA000000000002\n#aws_secret_access_key = 0000000000\n' \
     > "$AWS_SHARED_CREDENTIALS_FILE"
 
 # ------------------------------------------------------------------ init
@@ -71,10 +73,11 @@ has "credentials untouched on failure" '^\[default\]' "$AWS_SHARED_CREDENTIALS_F
 t "take-default" 0 awsv init --take-default
 has "default commented out" '^# awsv: \[profile default\]' "$AWS_CONFIG_FILE"
 has "SSO comment left alone" '^#\[sso-session thoth\]' "$AWS_CONFIG_FILE"
+hasnt "a blank line is not turned into a comment" '^# awsv: *$' "$AWS_CONFIG_FILE"
 
 t "import active section" 0 awsv import default --as wl --no-verify --mode direct
 yes_ [ -s "$V/keys/wl.gpg" ]
-hasnt "vault file is not plain text" 'AKIAFAKEDEFAULT' "$V/keys/wl.gpg"
+hasnt "vault file is not plain text" 'AKIA000000000001' "$V/keys/wl.gpg"
 hasnt "section removed from credentials" '^\[default\]' "$AWS_SHARED_CREDENTIALS_FILE"
 yes_ ls "$V"/backup/credentials.*.gpg >/dev/null
 t "import commented section" 0 awsv import nexum --no-verify --mode direct
@@ -106,7 +109,7 @@ yes_ python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["V
 env -u NO_COLOR "$T/bin/awsv" creds nexum > "$T/raw" 2>&1
 hasnt "no colour in the JSON, even with colour allowed" $'\e' "$T/raw"
 t "exec gets the key" 0 awsv exec wl -- sh -c 'printf %s "$AWS_ACCESS_KEY_ID"'
-has "exec env" '^AKIAFAKEDEFAULT00001$' "$T/out"
+has "exec env" '^AKIA000000000001$' "$T/out"
 if [ "$NET" = 1 ]; then
     t "session mode" 0 awsv set nexum --mode session
     t "session refused for a fake key" 1 awsv creds nexum
@@ -121,7 +124,7 @@ t "bad region" 1 awsv set nexum --region nowhere
 t "bad mode" 1 awsv set nexum --mode open
 printf 'NOTAKEY\nsecret\n' > "$T/in"
 t "add rejects a malformed key id" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
-printf 'AKIAFAKEOTHER0000003\nfake-secret-other\n' > "$T/in"
+printf 'AKIA000000000003\n0000000000\n' > "$T/in"
 t "add from stdin" 0 sh -c "awsv add other --stdin --no-verify --mode direct < '$T/in'"
 t "add twice refused" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
 t "help" 0 awsv --help
@@ -136,7 +139,7 @@ has "and lists the real ones" 'topics: setup' "$T/out"
 # ----------------------------------------------------------------- status
 t "status" 0 awsv status
 has "no plain keys" 'no keys left' "$T/out"
-printf '[stray]\naws_access_key_id = AKIAFAKESTRAY0000004\naws_secret_access_key = x\n' >> "$AWS_SHARED_CREDENTIALS_FILE"
+printf '[stray]\naws_access_key_id = AKIA000000000004\naws_secret_access_key = x\n' >> "$AWS_SHARED_CREDENTIALS_FILE"
 t "status with a stray key" 0 awsv status
 has "warns about it" 'WARNING' "$T/out"
 
@@ -157,7 +160,7 @@ mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
 gpg --batch --pinentry-mode loopback --passphrase 'pw' \
     --quick-generate-key "awsv local vault" future-default default never 2>/dev/null
 printf 'pinentry-program /usr/bin/pinentry-curses\n' > "$GNUPGHOME/gpg-agent.conf"
-printf 'AKIAFAKELOCKED000005\nfake-secret-locked\n' > "$T/in"
+printf 'AKIA000000000005\n0000000000\n' > "$T/in"
 t "add to the locked vault" 0 sh -c "awsv add locked --stdin --no-verify --mode direct < '$T/in'"
 gpg --batch --pinentry-mode loopback --passphrase 'pw' --quiet --decrypt "$AWSV_HOME/keys/locked.gpg" >/dev/null 2>&1
 t "status sees the cached passphrase" 0 awsv status
@@ -167,7 +170,7 @@ t "status after lock" 0 awsv status
 has "locked" 'agent: +locked' "$T/out"
 t "locked vault gives nothing without a terminal" 1 awsv creds locked
 has "and says what to do" 'awsv unlock' "$T/out"
-hasnt "no key in the error" 'AKIAFAKELOCKED' "$T/out"
+hasnt "no key in the error" 'AKIA000000000005' "$T/out"
 export GNUPGHOME="$T/gnupg" AWSV_HOME="$V"
 
 # ---------------------------------------------- where the session cache goes
@@ -180,7 +183,7 @@ t "empty AWSV_RUN turns the cache off" 0 env AWSV_RUN= awsv status
 has "and says so" 'cache: +none' "$T/out"
 t "lock with no cache deletes nothing" 0 env AWSV_RUN= awsv lock
 t "rm with no cache" 0 env AWSV_RUN= awsv rm other --yes
-printf 'AKIAFAKEOTHER0000003\nfake-secret-other\n' > "$T/in"
+printf 'AKIA000000000003\n0000000000\n' > "$T/in"
 t "add back" 0 sh -c "awsv add other --stdin --no-verify --mode direct < '$T/in'"
 t "relative AWSV_RUN refused" 1 env AWSV_RUN=relative awsv status
 t "AWSV_RUN=/ refused" 1 env AWSV_RUN=/ awsv status
