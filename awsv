@@ -51,8 +51,9 @@ END="# <<< awsv <<<"
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     B=$'\e[1m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' C=$'\e[36m' D=$'\e[2m' N=$'\e[0m'
     BY=$'\e[1;93m' BC=$'\e[1;96m'     # bright yellow, bright cyan
+    YG=$'\e[1;93;42m'                  # bright yellow on dark green: time left in the window
 else
-    B="" G="" Y="" R="" C="" D="" N="" BY="" BC=""
+    B="" G="" Y="" R="" C="" D="" N="" BY="" BC="" YG=""
 fi
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     EB=$'\e[1m' ER=$'\e[31m' EY=$'\e[33m' EN=$'\e[0m'
@@ -769,7 +770,7 @@ cmd_status() {
         local u; u="$(cat "$AWSV_HOME/unlocked-until" 2>/dev/null || echo 0)"
         [ "$st" = 1 ] && vstate=UNLOCKED || vstate=LOCKED
         if [ "$st" = 1 ] && [ "$u" -gt "$now" ]; then
-            say "  state     ${G}${B}UNLOCKED${N} until $(date -d "@$u" '+%H:%M %Z'), $(( (u - now) / 60 )) min left"
+            say "  state     ${G}${B}UNLOCKED${N} until $(date -d "@$u" '+%H:%M %Z'), ${YG}${YG:+ }$(( (u - now) / 60 )) min left${YG:+ }${N}"
             say "            any process of this user can read the keys now — close it: awsv lock"
         elif [ "$st" = 1 ]; then
             say "  state     ${G}${B}UNLOCKED${N} for up to $(human "$(agent_ttl)") from when the passphrase was typed"
