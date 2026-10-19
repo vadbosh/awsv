@@ -50,8 +50,9 @@ END="# <<< awsv <<<"
 # and an escape code in it would break every call; NO_COLOR turns it off too.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     B=$'\e[1m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' C=$'\e[36m' D=$'\e[2m' N=$'\e[0m'
+    BY=$'\e[1;93m' BC=$'\e[1;96m'     # bright yellow, bright cyan
 else
-    B="" G="" Y="" R="" C="" D="" N=""
+    B="" G="" Y="" R="" C="" D="" N="" BY="" BC=""
 fi
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     EB=$'\e[1m' ER=$'\e[31m' EY=$'\e[33m' EN=$'\e[0m'
@@ -753,7 +754,7 @@ cmd_passwd() {
 # One block for the vault, then one block per account, all in the same shape.
 # Every line says what it means, not only a value.
 cmd_status() {
-    local act g st f n mode exp_s left now cache acct arn plain line
+    local act g st f n mode exp_s left now cache acct arn plain line vstate=NOT-SET-UP
     act="$(active)"; now="$(date +%s)"
 
     say "${B}VAULT${N}       $AWSV_HOME"
@@ -766,6 +767,7 @@ cmd_status() {
         g="$(grip)"
         st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
         local u; u="$(cat "$AWSV_HOME/unlocked-until" 2>/dev/null || echo 0)"
+        [ "$st" = 1 ] && vstate=UNLOCKED || vstate=LOCKED
         if [ "$st" = 1 ] && [ "$u" -gt "$now" ]; then
             say "  state     ${G}${B}UNLOCKED${N} until $(date -d "@$u" '+%H:%M %Z'), $(( (u - now) / 60 )) min left"
             say "            any process of this user can read the keys now — close it: awsv lock"
@@ -795,6 +797,7 @@ cmd_status() {
     for f in "$KEYS"/*.gpg; do [ -e "$f" ] && count=$((count + 1)); done
     say ""
     say "${B}ACCOUNTS${N}    $count   ${D}* marks [default]: the account that plain \"aws\" uses${N}"
+    say "            ${D}LOCKED or UNLOCKED is the vault's state: one passphrase opens every account${N}"
     local names=() x
     [ -n "$act" ] && exists "$act" && names+=("$act")      # [default] first
     for f in "$KEYS"/*.gpg; do
@@ -804,10 +807,11 @@ cmd_status() {
     for n in "${names[@]}"; do
         mode="$(meta_get "$n" mode)"; acct="$(meta_get "$n" account)"; arn="$(meta_get "$n" arn)"
         say ""
+        # One lock for the whole vault: every account shows the same state.
         if [ "$n" = "$act" ]; then
-            say "${G}${B}* $n${N}  ${G}[default]${N}"
+            say "${G}${B}* $n${N}  ${G}[default]${N}  ${BY}ACTIVE:$vstate${N}"
         else
-            say "  ${B}$n${N}"
+            say "  ${B}$n${N}  ${BC}NOT ACTIVE:$vstate${N}"
         fi
         say "    account   ${acct:-not checked — stored with --no-verify}"
         say "    user      ${arn:-not checked}"

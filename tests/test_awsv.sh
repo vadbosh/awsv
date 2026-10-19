@@ -166,8 +166,11 @@ has "and lists the real ones" 'topics: init add import' "$T/out"
 t "status" 0 awsv status
 has "no plain keys" 'no keys left' "$T/out"
 has "the [default] account is marked" '^\* nexum +\[default\]' "$T/out"
-yes_ [ "$(sed -n '/^ACCOUNTS/,$p' "$T/out" | grep -m1 -E '^(\* |  )[a-z]')" = "* nexum  [default]" ]   # and comes first
-has "every account has its own block" '^  wl$' "$T/out"
+yes_ [ "$(sed -n '/^ACCOUNTS/,$p' "$T/out" | grep -m1 -E '^(\* |  )[a-z]' | awk '{print $2}')" = nexum ]   # and comes first
+has "the default is ACTIVE" '^\* nexum +\[default\] +ACTIVE:(UN)?LOCKED' "$T/out"
+has "the others are NOT ACTIVE" '^  wl +NOT ACTIVE:(UN)?LOCKED' "$T/out"
+yes_ [ "$(grep -oE 'ACTIVE:(UN)?LOCKED' "$T/out" | sort -u | wc -l)" = 1 ]   # one vault, one state for all
+has "every account has its own block" '^  wl +NOT ACTIVE' "$T/out"
 has "each block says how to use it" 'aws --profile wl' "$T/out"
 printf '[stray]\naws_access_key_id = AKIA000000000004\naws_secret_access_key = x\n' >> "$AWS_SHARED_CREDENTIALS_FILE"
 t "status with a stray key" 0 awsv status
