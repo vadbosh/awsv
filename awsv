@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+#
+# awsv — keep AWS access keys in a GPG-encrypted vault, not in ~/.aws/credentials.
+#
+#   awsv init [--take-default]       create the GPG key and the agent settings, once
+#   awsv add NAME [options]          type a new key in; AWS checks it, then it is stored
+#   awsv import SECTION [options]    move a section of ~/.aws/credentials into the vault
+#   awsv ls                          list the accounts in the vault
+#   awsv use NAME                    make NAME the [default] profile
+#   awsv set NAME [--region R] [--mode M]
+#   awsv rekey NAME                  replace the key of an account
+#   awsv rm NAME [--yes]             delete an account from the vault and the config
+#   awsv exec NAME -- CMD [ARGS]     run one command as NAME; [default] does not change
+#   awsv unlock                      ask for the GPG passphrase now, in this terminal
+#   awsv lock                        forget the passphrase and every cached session
+#   awsv status                      active account, lock state, keys left in plain text
+#   awsv creds NAME                  called by ~/.aws/config; prints credentials as JSON
+#
+# Options for add and import:
+#   --region R      the region of the profile; default us-east-1
+#   --mode M        session (default): every tool gets a temporary STS session of
+#                   AWSV_SESSION_SECONDS (3600). The stored key does not leave awsv.
+#                   direct: every tool gets the stored key itself. Use it when a tool
+#                   calls the IAM API: an STS session made without MFA cannot do that.
+#   --no-verify     store the key without asking AWS first
+#   --stdin         add and rekey: read the key id and the secret from two lines
+#   --as NAME       import: store under this name; the section name is the default.
+#                   The section "default" needs --as, because "default" is reserved.
+#   --keep          import: leave the section in ~/.aws/credentials
+#
+# How it works. Each account is one file, keys/NAME.gpg, encrypted to one GPG key.
+# The private part of that key is protected by one passphrase. gpg-agent keeps the
+# passphrase in memory after the first use, for the time set in gpg-agent.conf.
+# ~/.aws/config gets a block that awsv rewrites itself: [default] and one
+# [profile NAME] per account, each with "credential_process = awsv creds NAME".
+# The AWS CLI, the SDKs and Terraform run that command to get credentials.
+# When the agent is locked and there is no terminal to ask on, the command fails:
+# access closes by itself instead of staying open.
+
+set -uo pipefail
+umask 077
+
+AWSV_HOME="${AWSV_HOME:-$HOME/.local/share/awsv}"
+AWSV_RUN="${AWSV_RUN:-/run/awsv}"     # tmpfs: cached STS sessions, gone on reboot
+CONFIG="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+CREDS="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
+SESSION_SECONDS="${AWSV_SESSION_SECONDS:-3600}"
+GPG_UID="awsv local vault"
+SELF="$(readlink -f "$0")"
+# The path written into ~/.aws/config. The installed copy, when there is one:
+# a run straight from the repository must not tie the config to the work tree.
+BIN="$(readlink -f "$(command -v awsv 2>/dev/null || echo "$SELF")")"
+KEYS="$AWSV_HOME/keys"
+META="$AWSV_HOME/meta"
+BACKUP="$AWSV_HOME/backup"
+BEGIN="# >>> awsv: generated, do not edit between these two lines >>>"
+END="# <<< awsv <<<"
+
+# Colour only on a terminal. "awsv creds" writes JSON for the AWS CLI to parse,
+# and an escape code in it would break every call; NO_COLOR turns it off too.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    B=$'\e[1m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' C=$'\e[36m' D=$'\e[2m' N=$'\e[0m'
+else
+    B="" G="" Y="" R="" C="" D="" N=""
+fi
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+    EB=$'\e[1m' ER=$'\e[31m' EY=$'\e[33m' EN=$'\e[0m'
+else
+    EB="" ER="" EY="" EN=""
+fi
+
+die()  { printf '%sawsv: %s%s\n' "$ER$EB" "$*" "$EN" >&2; exit 1; }
+warn() { printf '%s%s%s\n' "$EY" "$*" "$EN" >&2; }
+ok()   { printf '%s%s%s\n' "$G" "$*" "$N"; }
+say()  { printf '%s\n' "$*"; }
+usage() { sed -n '2,/^$/s/^# \{0,1\}//p' "$SELF"; exit 0; }
+
+# ---------------------------------------------------------------- helpers
+
+valid_name() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] \
+        || die "bad name '$1': use lowercase letters, digits, '-' and '_', up to 32"
+    [ "$1" != default ] \
+        || die "'default' is reserved: it is the account that 'awsv use' selected"
+}
+valid_region() { [[ "$1" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "bad region '$1'"; }
+valid_mode()   { [ "$1" = session ] || [ "$1" = direct ] || die "mode is 'session' or 'direct', not '$1'"; }
+exists()       { [ -f "$KEYS/$1.gpg" ]; }
+need()         { exists "$1" || die "no account '$1' in the vault — see 'awsv ls'"; }
+active()       { cat "$AWSV_HOME/active" 2>/dev/null; }
+
+need_tty() {
+    { [ -t 0 ] && [ -t 1 ]; } || die "$1 needs a terminal"
+    GPG_TTY="$(tty)"; export GPG_TTY
+}
+
+fpr() {
+    gpg --list-secret-keys --with-colons -- "$GPG_UID" 2>/dev/null \
+        | awk -F: '/^fpr:/ {print $10; exit}'
+}
+grip() {   # keygrip of the encryption subkey: what gpg-agent caches
+    gpg --list-secret-keys --with-colons --with-keygrip -- "$GPG_UID" 2>/dev/null \
+        | awk -F: '/^ssb:/ {s=1} s && /^grp:/ {print $10; exit}'
+}
+
+meta_get() { sed -n "s/^$2=//p" "$META/$1" 2>/dev/null | head -1; }
+meta_set() {
+    local f="$META/$1"
+    mkdir -p "$META"; touch "$f"
+    if grep -q "^$2=" "$f"; then sed -i "s|^$2=.*|$2=$3|" "$f"
+    else printf '%s=%s\n' "$2" "$3" >> "$f"; fi
+}
+
+# --------------------------------------------------------- the vault itself
+
+encrypt_key() {   # NAME — AKID and SECRET are set
+    local f; f="$(fpr)"
+    [ -n "$f" ] || die "no GPG key yet — run 'awsv init' first"
+    mkdir -p "$KEYS"
+    # printf is a shell builtin: the secret never appears in a process argument list.
+    printf 'AccessKeyId=%s\nSecretAccessKey=%s\n' "$AKID" "$SECRET" \
+        | gpg --quiet --yes --trust-model always --encrypt --recipient "$f" \
+              --output "$KEYS/$1.gpg.tmp" \
+        || die "encryption failed"
+    mv -f "$KEYS/$1.gpg.tmp" "$KEYS/$1.gpg"
+}
+
+decrypt_key() {   # NAME — sets AKID and SECRET
+    local out errf why
+    errf="$(mktemp)"
+    if ! out="$(gpg --quiet --decrypt "$KEYS/$1.gpg" 2>"$errf" </dev/null)"; then
+        why="$(grep -m1 -v '^gpg: encrypted with' "$errf")"; rm -f "$errf"
+        die "cannot open '$1' — ${why:-gpg failed}. If the vault is locked, run 'awsv unlock' in a terminal."
+    fi
+    rm -f "$errf"
+    AKID="$(printf '%s\n' "$out" | sed -n 's/^AccessKeyId=//p')"
+    SECRET="$(printf '%s\n' "$out" | sed -n 's/^SecretAccessKey=//p')"
+    [ -n "$AKID" ] && [ -n "$SECRET" ] || die "the vault entry '$1' is damaged"
+}
+
+# Run the AWS CLI with the given credentials only: no profile, no config file,
+# no credentials file. That is what stops credential_process from calling itself.
+# The values go in through exported variables, never through the argument list.
+aws_with() {   # AKID SECRET TOKEN(or "") -- aws arguments
+    local a="$1" s="$2" t="$3"; shift 3
+    (
+        unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN
+        export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
+        export AWS_ACCESS_KEY_ID="$a" AWS_SECRET_ACCESS_KEY="$s"
+        [ -n "$t" ] && export AWS_SESSION_TOKEN="$t"
+        exec aws "$@"
+    )
+}
+
+session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or from STS
+    local name="$1" cache="$AWSV_RUN/$1" now exp out errf region
+    now="$(date +%s)"
+    if [ -f "$cache" ]; then
+        { read -r SAKID; read -r SSECRET; read -r STOKEN; read -r SEXP; } < "$cache"
+        exp="$(date -d "$SEXP" +%s 2>/dev/null || echo 0)"
+        [ "$exp" -gt $((now + 300)) ] && return 0       # still valid for 5 minutes
+    fi
+    decrypt_key "$name"
+    region="$(meta_get "$name" region)"
+    errf="$(mktemp)"
+    out="$(aws_with "$AKID" "$SECRET" "" sts get-session-token \
+             --duration-seconds "$SESSION_SECONDS" --region "${region:-us-east-1}" \
+             --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken,Expiration]' \
+             --output text 2>"$errf")" \
+        || { local e; e="$(grep -v '^$' "$errf" | tail -1)"; rm -f "$errf"
+             die "STS refused a session for '$name': $e"; }
+    rm -f "$errf"
+    read -r SAKID SSECRET STOKEN SEXP <<< "$out"
+    [ -n "$STOKEN" ] || die "STS returned no session for '$name'"
+    mkdir -p "$AWSV_RUN"; chmod 700 "$AWSV_RUN"
+    printf '%s\n%s\n%s\n%s\n' "$SAKID" "$SSECRET" "$STOKEN" "$SEXP" > "$cache.tmp"
+    mv -f "$cache.tmp" "$cache"
+}
+
+# ------------------------------------------------------------ ~/.aws/config
+
+outside_block() {   # the config file without the awsv block
+    [ -f "$CONFIG" ] || return 0
+    awk -v b="$BEGIN" -v e="$END" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$CONFIG"
+}
+
+conflicts() {   # names awsv generates that the rest of the file defines too
+    local want=" default " f
+    for f in "$KEYS"/*.gpg; do [ -e "$f" ] && want+="$(basename "$f" .gpg) "; done
+    outside_block \
+        | sed -nE 's/^[[:space:]]*\[(profile[[:space:]]+)?([^]]+)\].*/\2/p' \
+        | while IFS= read -r s; do case "$want" in *" $s "*) printf '%s ' "$s";; esac; done
+}
+
+render_block() {
+    local act f n
+    act="$(active)"
+    printf '%s\n' "$BEGIN"
+    if [ -n "$act" ] && exists "$act"; then
+        printf '[default]\nregion = %s\noutput = json\ncredential_process = %s creds %s\n\n' \
+            "$(meta_get "$act" region)" "$BIN" "$act"
+    else
+        printf '# no active account — run: awsv use NAME\n\n'
+    fi
+    for f in "$KEYS"/*.gpg; do
+        [ -e "$f" ] || continue
+        n="$(basename "$f" .gpg)"
+        printf '[profile %s]\nregion = %s\noutput = json\ncredential_process = %s creds %s\n\n' \
+            "$n" "$(meta_get "$n" region)" "$BIN" "$n"
+    done
+    printf '%s\n' "$END"
+}
+
+check_config() {
+    local c; c="$(conflicts)"
+    [ -z "$c" ] && return 0
+    die "~/.aws/config already defines [${c% }] outside the awsv block. For [default] run 'awsv init --take-default'; rename or remove any other by hand."
+}
+
+write_config() {
+    check_config
+    mkdir -p "$(dirname "$CONFIG")" "$BACKUP"
+    if [ -f "$CONFIG" ]; then
+        cp -p "$CONFIG" "$BACKUP/config.$(date +%s%N)"
+        ls -1t "$BACKUP"/config.* 2>/dev/null | tail -n +11 | xargs -r rm -f
+    fi
+    {   # the user's part, trailing blank lines dropped, then one blank line and the block
+        outside_block | awk 'NF {for (; n > 0; n--) print ""; print; next} {n++}'
+        printf '\n'
+        render_block
+    } > "$CONFIG.tmp"
+    mv -f "$CONFIG.tmp" "$CONFIG"
+    chmod 600 "$CONFIG"
+}
+
+take_default() {   # comment out [default] and [profile default] outside the block
+    [ -f "$CONFIG" ] || return 0
+    mkdir -p "$BACKUP"
+    cp -p "$CONFIG" "$BACKUP/config.$(date +%s%N)"
+    awk -v b="$BEGIN" -v e="$END" '
+        $0 == b {inb = 1} $0 == e {inb = 0; print; next}
+        inb {print; next}
+        /^[[:space:]]*#?[[:space:]]*\[/ {
+            cur = ($0 ~ /^[[:space:]]*\[(profile[[:space:]]+)?default\]/)
+        }
+        cur {print "# awsv: " $0; next}
+        {print}' "$CONFIG" > "$CONFIG.tmp" && mv -f "$CONFIG.tmp" "$CONFIG"
+}
+
+# ------------------------------------------------------- ~/.aws/credentials
+
+# Print AKID=… and SECRET=… for one section. An active [s] uses its active
+# lines; a commented #[s] uses its commented lines.
+read_section() {
+    awk -v s="$1" '
+        function hdr(line,   h) { h = line; sub(/^[[:space:]]*#?[[:space:]]*/, "", h); return h }
+        /^[[:space:]]*#?[[:space:]]*\[/ {
+            com = ($0 ~ /^[[:space:]]*#/)
+            ins = (hdr($0) == "[" s "]")
+            if (ins) found++
+            next
+        }
+        ins {
+            l = $0
+            if (com) { if (l !~ /^[[:space:]]*#/) next; sub(/^[[:space:]]*#[[:space:]]*/, "", l) }
+            else if (l ~ /^[[:space:]]*#/) next
+            if (l !~ /=/) next
+            k = l; sub(/[[:space:]]*=.*/, "", k); gsub(/[[:space:]]/, "", k)
+            v = l; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+            if (k == "aws_access_key_id")     print "AKID=" v
+            if (k == "aws_secret_access_key") print "SECRET=" v
+            if (k == "aws_session_token")     print "TOKEN=1"
+        }
+        END { print "FOUND=" found+0 }' "$CREDS"
+}
+
+drop_section() {   # remove [s] or #[s] with its lines; keep an encrypted backup first
+    local f; f="$(fpr)"
+    mkdir -p "$BACKUP"
+    gpg --quiet --yes --trust-model always --encrypt --recipient "$f" \
+        --output "$BACKUP/credentials.$(date +%s%N).gpg" "$CREDS" \
+        || die "could not back up the credentials file; nothing was removed"
+    awk -v s="$1" '
+        /^[[:space:]]*#?[[:space:]]*\[/ {
+            h = $0; sub(/^[[:space:]]*#?[[:space:]]*/, "", h); del = (h == "[" s "]")
+        }
+        !del' "$CREDS" > "$CREDS.tmp" && mv -f "$CREDS.tmp" "$CREDS"
+    chmod 600 "$CREDS"
+}
+
+plain_keys_left() {   # active key lines still in the credentials file
+    [ -f "$CREDS" ] || { echo 0; return; }
+    grep -cE '^[[:space:]]*aws_access_key_id[[:space:]]*=' "$CREDS"
+}
+
+# ------------------------------------------------------------- the commands
+
+parse_opts() {   # sets REGION MODE VERIFY STDIN AS KEEP YES from the remaining arguments
+    REGION=""; MODE=""; VERIFY=1; STDIN=0; AS=""; KEEP=0; YES=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --region)    REGION="${2:-}"; shift ;;
+            --mode)      MODE="${2:-}"; shift ;;
+            --no-verify) VERIFY=0 ;;
+            --stdin)     STDIN=1 ;;
+            --as)        AS="${2:-}"; shift ;;
+            --keep)      KEEP=1 ;;
+            --yes)       YES=1 ;;
+            *)           die "unknown option '$1' (try --help)" ;;
+        esac
+        shift
+    done
+    [ -z "$REGION" ] || valid_region "$REGION"
+    [ -z "$MODE" ] || valid_mode "$MODE"
+}
+
+read_key() {   # sets AKID SECRET from the terminal or from stdin
+    if [ "$STDIN" = 1 ]; then
+        IFS= read -r AKID; IFS= read -r SECRET
+    else
+        need_tty "typing a key in"
+        read -rp 'Access key id: ' AKID
+        read -rsp 'Secret access key (hidden): ' SECRET; printf '\n'
+    fi
+    [[ "$AKID" =~ ^A[KS]IA[A-Z0-9]{12,}$ ]] || die "that does not look like an access key id"
+    [ -n "$SECRET" ] || die "empty secret"
+}
+
+store() {   # NAME REGION MODE — AKID and SECRET are set
+    local name="$1" region="$2" mode="$3" id=""
+    if [ "$VERIFY" = 1 ]; then
+        id="$(aws_with "$AKID" "$SECRET" "" sts get-caller-identity --region "$region" \
+                --query '[Account,Arn]' --output text 2>&1)" \
+            || die "AWS rejected the key: $(printf '%s' "$id" | grep -v '^$' | tail -1)"
+    fi
+    encrypt_key "$name"
+    : > "$META/$name" 2>/dev/null || { mkdir -p "$META"; : > "$META/$name"; }
+    meta_set "$name" region "$region"
+    meta_set "$name" mode "$mode"
+    meta_set "$name" added "$(date -Is)"
+    if [ -n "$id" ]; then
+        meta_set "$name" account "$(printf '%s' "$id" | awk '{print $1}')"
+        meta_set "$name" arn "$(printf '%s' "$id" | awk '{print $2}')"
+    fi
+    [ -n "$(active)" ] || printf '%s\n' "$name" > "$AWSV_HOME/active"
+    rm -f "$AWSV_RUN/$name"
+    write_config
+    ok "stored $name — $mode mode, $region${id:+, $(meta_get "$name" arn)}"
+    [ "$(active)" = "$name" ] && say "  ${B}it is the [default] profile now${N}"
+    [ "$mode" = session ] && warn "  session mode: an STS session made without MFA cannot call the IAM API. If a tool needs it: awsv set $name --mode direct"
+    return 0
+}
+
+cmd_init() {
+    local take=0 conf ttl
+    [ "${1:-}" = --take-default ] && take=1
+    mkdir -p "$KEYS" "$META" "$BACKUP"; chmod 700 "$AWSV_HOME"
+    if [ -z "$(fpr)" ]; then
+        need_tty "creating the GPG key"
+        say "Creating the GPG key '$GPG_UID'."
+        say "${Y}${B}Choose its passphrase now.${N} ${B}It is the one password for every account in the vault.${N}"
+        gpg --quick-generate-key "$GPG_UID" future-default default never >/dev/null \
+            || die "the key was not created"
+    fi
+    conf="${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf"
+    if ! grep -q '^default-cache-ttl' "$conf" 2>/dev/null; then
+        [ -f "$conf" ] && cp -p "$conf" "$BACKUP/gpg-agent.conf.$(date +%s)"
+        {
+            printf '# awsv: the passphrase is asked once and kept for 8 hours\n'
+            printf 'default-cache-ttl 28800\nmax-cache-ttl 28800\n'
+            printf 'pinentry-program /usr/bin/pinentry-curses\n'
+        } >> "$conf"
+        gpgconf --reload gpg-agent
+    fi
+    if ! grep -q 'GPG_TTY' "$HOME/.bashrc" 2>/dev/null; then
+        [ -f "$HOME/.bashrc" ] && cp -p "$HOME/.bashrc" "$BACKUP/bashrc.$(date +%s)"
+        printf '\n# awsv: lets gpg ask for the passphrase in this terminal\nexport GPG_TTY=$(tty)\n' \
+            >> "$HOME/.bashrc"
+        warn "added 'export GPG_TTY=\$(tty)' to ~/.bashrc — open a new terminal, or run that line once here"
+    fi
+    [ "$take" = 1 ] && take_default && warn "commented out [default] in ~/.aws/config (backup in $BACKUP)"
+    ttl="$(sed -n 's/^max-cache-ttl[[:space:]]*//p' "$conf" | head -1)"
+    ok "ready: GPG key $(fpr | tail -c 17), passphrase kept for $((ttl / 3600)) h after it is typed"
+}
+
+cmd_add() {
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv add NAME [--region R] [--mode M]"
+    shift; valid_name "$name"; parse_opts "$@"
+    exists "$name" && die "'$name' is in the vault already — to replace its key: awsv rekey $name"
+    [ -n "$(fpr)" ] || die "no GPG key yet — run 'awsv init' first"
+    check_config
+    read_key
+    store "$name" "${REGION:-us-east-1}" "${MODE:-session}"
+}
+
+cmd_import() {
+    local sec="${1:-}" name vals FOUND=0 TOKEN=""
+    [ -n "$sec" ] || die "usage: awsv import SECTION [--as NAME] [--keep] [--region R] [--mode M]"
+    shift; parse_opts "$@"
+    name="${AS:-$sec}"; valid_name "$name"
+    [ -f "$CREDS" ] || die "no $CREDS"
+    exists "$name" && die "'$name' is in the vault already"
+    [ -n "$(fpr)" ] || die "no GPG key yet — run 'awsv init' first"
+    vals="$(read_section "$sec")"
+    AKID="$(printf '%s\n' "$vals" | sed -n 's/^AKID=//p')"
+    SECRET="$(printf '%s\n' "$vals" | sed -n 's/^SECRET=//p')"
+    FOUND="$(printf '%s\n' "$vals" | sed -n 's/^FOUND=//p')"
+    TOKEN="$(printf '%s\n' "$vals" | sed -n 's/^TOKEN=//p')"
+    [ "$FOUND" -ge 1 ] || die "no section [$sec] in $CREDS, active or commented"
+    [ "$FOUND" -le 1 ] || die "[$sec] is in $CREDS more than once; leave one and run again"
+    [ -z "$TOKEN" ] || die "[$sec] holds a session token — that is a temporary key, nothing to vault"
+    [ -n "$AKID" ] && [ -n "$SECRET" ] || die "[$sec] has no aws_access_key_id / aws_secret_access_key"
+    # The check runs before the key is stored, so a failure leaves both files as they were.
+    check_config
+    store "$name" "${REGION:-us-east-1}" "${MODE:-session}"
+    if [ "$KEEP" = 0 ]; then
+        drop_section "$sec"
+        ok "  removed [$sec] from $CREDS (encrypted backup in $BACKUP)"
+    fi
+}
+
+cmd_ls() {
+    local f n act any=0
+    act="$(active)"
+    printf '%s%-14s %-7s %-8s %-12s %-14s %s%s\n' "$B" NAME DEFAULT MODE REGION ACCOUNT ARN "$N"
+    for f in "$KEYS"/*.gpg; do
+        [ -e "$f" ] || continue; any=1
+        n="$(basename "$f" .gpg)"
+        # the whole row in one colour: escape codes inside a padded column break the alignment
+        printf '%s%-14s %-7s %-8s %-12s %-14s %s%s\n' "$([ "$n" = "$act" ] && printf '%s' "$G$B")" \
+            "$n" "$([ "$n" = "$act" ] && echo '*')" \
+            "$(meta_get "$n" mode)" "$(meta_get "$n" region)" \
+            "$(meta_get "$n" account)" "$(meta_get "$n" arn)" "$N"
+    done
+    [ "$any" = 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
+}
+
+cmd_use() {
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv use NAME"
+    need "$name"
+    printf '%s\n' "$name" > "$AWSV_HOME/active"
+    write_config
+    ok "[default] is $name now — $(meta_get "$name" arn)"
+}
+
+cmd_set() {
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv set NAME [--region R] [--mode M]"
+    shift; need "$name"; parse_opts "$@"
+    [ -n "$REGION$MODE" ] || die "nothing to change: give --region or --mode"
+    [ -z "$REGION" ] || meta_set "$name" region "$REGION"
+    [ -z "$MODE" ] || meta_set "$name" mode "$MODE"
+    rm -f "$AWSV_RUN/$name"
+    write_config
+    ok "$name: $(meta_get "$name" mode) mode, $(meta_get "$name" region)"
+}
+
+cmd_rekey() {
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv rekey NAME"
+    shift; need "$name"; parse_opts "$@"
+    read_key
+    store "$name" "$(meta_get "$name" region)" "$(meta_get "$name" mode)"
+    warn "  the old key is still valid in AWS until you deactivate it in IAM"
+}
+
+cmd_rm() {
+    local name="${1:-}" a; [ -n "$name" ] || die "usage: awsv rm NAME [--yes]"
+    shift; need "$name"; parse_opts "$@"
+    if [ "$YES" = 0 ]; then
+        need_tty "a confirmation (or pass --yes)"
+        read -rp "${R}${B}Delete $name${N} ($(meta_get "$name" arn)) from the vault? [y/N] " a
+        [ "$a" = y ] || [ "$a" = Y ] || die "nothing deleted"
+    fi
+    rm -f "$KEYS/$name.gpg" "$META/$name" "$AWSV_RUN/$name"
+    [ "$(active)" = "$name" ] && : > "$AWSV_HOME/active"
+    write_config
+    ok "removed $name"
+    warn "  its key is still valid in AWS — deactivate it in IAM if it is no longer needed"
+    [ -n "$(active)" ] || warn "  no [default] profile now — awsv use NAME"
+}
+
+cmd_exec() {
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv exec NAME -- CMD [ARGS]"
+    shift; need "$name"
+    [ "${1:-}" = -- ] && shift
+    [ $# -gt 0 ] || die "usage: awsv exec NAME -- CMD [ARGS]"
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN
+    if [ "$(meta_get "$name" mode)" = direct ]; then
+        decrypt_key "$name"
+        export AWS_ACCESS_KEY_ID="$AKID" AWS_SECRET_ACCESS_KEY="$SECRET"
+    else
+        session_creds "$name"
+        export AWS_ACCESS_KEY_ID="$SAKID" AWS_SECRET_ACCESS_KEY="$SSECRET" AWS_SESSION_TOKEN="$STOKEN"
+    fi
+    export AWS_REGION="${AWS_REGION:-$(meta_get "$name" region)}"
+    exec "$@"
+}
+
+cmd_creds() {   # the credential_process entry point
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awsv creds NAME"
+    need "$name"
+    if [ "$(meta_get "$name" mode)" = direct ]; then
+        decrypt_key "$name"
+        printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s"}\n' "$AKID" "$SECRET"
+    else
+        session_creds "$name"
+        printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s","SessionToken":"%s","Expiration":"%s"}\n' \
+            "$SAKID" "$SSECRET" "$STOKEN" "$SEXP"
+    fi
+}
+
+cmd_unlock() {
+    local f
+    need_tty "unlock"
+    for f in "$KEYS"/*.gpg; do [ -e "$f" ] && break; done
+    [ -e "${f:-}" ] || die "the vault is empty — nothing to unlock"
+    gpg --quiet --decrypt "$f" >/dev/null || die "not unlocked"
+    ok "unlocked: tools, and the assistant in this machine's shell, can use the vault until the agent forgets"
+}
+
+cmd_lock() {
+    gpgconf --reload gpg-agent
+    rm -f "$AWSV_RUN"/* 2>/dev/null
+    ok "locked: the agent forgot the passphrase and every cached session is deleted"
+}
+
+cmd_status() {
+    local act g st n f exp left
+    act="$(active)"
+    say "vault:        $AWSV_HOME — $(ls "$KEYS"/*.gpg 2>/dev/null | wc -l) account(s)"
+    say "[default]:    ${B}${act:-none}${N}${act:+ — $(meta_get "$act" arn)}"
+    if [ -z "$(fpr)" ]; then say "GPG key:      ${Y}none — run 'awsv init'${N}"; else
+        say "GPG key:      $(fpr | tail -c 17)"
+        g="$(grip)"
+        st="$(gpg-connect-agent "keyinfo $g" /bye 2>/dev/null | awk '$2 == "KEYINFO" {print $7}')"
+        case "$st" in
+            1) say "agent:        ${G}unlocked${N} — the passphrase is cached" ;;
+            *) say "agent:        ${Y}locked${N} — the next use asks for the passphrase (awsv unlock)" ;;
+        esac
+    fi
+    for f in "$AWSV_RUN"/*; do
+        [ -f "$f" ] || continue
+        n="$(basename "$f")"; exp="$(sed -n 4p "$f")"
+        say "session:      ${C}$n${N} until $(date -d "$exp" '+%H:%M %Z' 2>/dev/null || echo "$exp")"
+    done
+    left="$(plain_keys_left)"
+    if [ "$left" -gt 0 ]; then
+        say "${R}${B}WARNING:${N}      ${R}$CREDS still holds $left key(s) in plain text.${N}"
+        say "              A key there overrides credential_process — the vault is not used for that profile."
+    else
+        say "plain text:   ${G}no keys left in $CREDS${N}"
+    fi
+}
+
+# ------------------------------------------------------------------- main
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+    init)   cmd_init "$@" ;;
+    add)    cmd_add "$@" ;;
+    import) cmd_import "$@" ;;
+    ls|list) cmd_ls ;;
+    use)    cmd_use "$@" ;;
+    set)    cmd_set "$@" ;;
+    rekey)  cmd_rekey "$@" ;;
+    rm|remove) cmd_rm "$@" ;;
+    exec)   cmd_exec "$@" ;;
+    creds)  cmd_creds "$@" ;;
+    unlock) cmd_unlock ;;
+    lock)   cmd_lock ;;
+    status) cmd_status ;;
+    ""|-h|--help|help) usage ;;
+    *)      die "unknown command '$cmd' (try --help)" ;;
+esac
