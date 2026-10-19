@@ -127,14 +127,25 @@ t "add rejects a malformed key id" 1 sh -c "awsv add other --stdin --no-verify <
 printf 'AKIA000000000003\n0000000000\n' > "$T/in"
 t "add from stdin" 0 sh -c "awsv add other --stdin --no-verify --mode direct < '$T/in'"
 t "add twice refused" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
+
+# show prints a secret, so it must refuse anywhere a log could keep it.
+t "show refuses without a terminal" 1 awsv show other
+has "and says why" 'only in a terminal' "$T/out"
+hasnt "and prints no key" 'AKIA000000000003' "$T/out"
+if command -v script >/dev/null 2>&1; then   # script(1) gives the command a real terminal
+    script -qc "awsv show other" /dev/null > "$T/out" 2>&1
+    has "show prints the key on a terminal" 'aws_access_key_id += AKIA000000000003' "$T/out"
+fi
+t "passwd needs a terminal" 1 awsv passwd
+has "and says so" 'needs a terminal' "$T/out"
 t "help" 0 awsv --help
 has "help lists init" 'awsv init' "$T/out"
-yes_ [ "$(grep -cE '^[a-z]+ — ' "$T/out")" = 13 ]   # every situation is in the full help
-t "help topic" 0 awsv help migrate
+yes_ [ "$(grep -cE '^[a-z]+ — ' "$T/out")" = 14 ]   # every command has its section
+t "help topic" 0 awsv help import
 has "the topic gives its steps" 'awsv import default --as' "$T/out"
 hasnt "a topic shows only itself" '^COMMANDS' "$T/out"
 t "unknown topic" 1 awsv help nosuch
-has "and lists the real ones" 'topics: setup' "$T/out"
+has "and lists the real ones" 'topics: init add import' "$T/out"
 
 # ----------------------------------------------------------------- status
 t "status" 0 awsv status
