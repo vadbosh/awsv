@@ -216,8 +216,9 @@ nothing asks first. That includes scripts, cron jobs and an AI assistant that
 runs as you. Keep an account open only as long as you need it
 (`awsv unlock 30m`), and close it when done (`awsv lock`).
 
-In session mode, a session already issued keeps working until it expires, up to
-an hour, even after the unlock window ends. `awsv lock` deletes it at once.
+When the unlock window ends, awsv stops handing out the cached session, and
+`awsv lock` deletes it at once. A process that already got the session can use
+it until it expires.
 
 More: [docs/details.md](docs/details.md) — how it works, one passphrase or one per
 account, session and direct mode, traps, recovery, error messages, tests.

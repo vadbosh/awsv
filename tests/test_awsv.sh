@@ -289,6 +289,26 @@ t "locked vault gives nothing without a terminal" 1 awsv creds locked
 has "and says what to do" 'awsv unlock' "$T/out"
 hasnt "no key in the error" 'AKIA000000000005' "$T/out"
 
+# A cached session follows its passphrase. While gpg-agent holds the
+# passphrase the session is reused; once the window ends (the agent forgot
+# it), the cached session is no longer handed out, and its file is gone.
+t "session mode for the locked account" 0 awsv set locked --mode session
+gpg --batch --pinentry-mode loopback --passphrase 'pw' --quiet --decrypt "$AWSV_HOME/keys/locked.gpg" >/dev/null 2>&1
+plant_session() {
+    mkdir -p "$AWSV_RUN"
+    printf 'ASIA000000000077\nsessionsecret\nsessiontoken\n%s\n' \
+        "$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)" > "$AWSV_RUN/locked"
+}
+plant_session
+t "open: the cached session is used" 0 awsv creds locked
+has "the session from the cache" 'ASIA000000000077' "$T/out"
+gpgconf --homedir "$GNUPGHOME" --reload gpg-agent     # the sandbox agent: the window ends
+plant_session
+t "window over: the cached session is not handed out" 1 awsv creds locked
+hasnt "no session in the output" 'ASIA000000000077' "$T/out"
+yes_ [ ! -e "$AWSV_RUN/locked" ]
+t "back to direct" 0 awsv set locked --mode direct
+
 # Two locks in one vault: the shared passphrase 'pw', and 'solo' with its own
 # 'pw2'. Opening one must leave the other closed, both ways.
 printf 'AKIA000000000007\n0000000000\n' > "$T/in"

@@ -29,9 +29,8 @@ Three things follow from this:
 - **`~/.aws/credentials` stays empty.** That is the correct state, not a fault.
 - **When the account is locked and nobody can type the passphrase, the call
   fails.** A cron job, a script or an AI assistant has no terminal to ask in.
-  Access closes by itself, with one exception: in session mode a session
-  already issued works until it expires, up to an hour. `awsv lock` deletes it
-  at once.
+  Access closes by itself instead of staying open, and a cached session closes
+  with it.
 
 ## What the vault does not protect
 

@@ -487,9 +487,16 @@ session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or
     cache="$(cache_file "$name")"
     now="$(date +%s)"
     if [ -n "$cache" ] && [ -f "$cache" ]; then
-        { read -r SAKID; read -r SSECRET; read -r STOKEN; read -r SEXP; } < "$cache"
-        exp="$(date -d "$SEXP" +%s 2>/dev/null || echo 0)"
-        [ "$exp" -gt $((now + 300)) ] && return 0       # still valid for 5 minutes
+        # A cached session is handed out only while the passphrase that opens
+        # the account is in gpg-agent's memory. When the unlock window ends,
+        # the session ends with it, not up to an hour later (F520).
+        if cached "$(home_of "$name")" "$(uid_of "$name")"; then
+            { read -r SAKID; read -r SSECRET; read -r STOKEN; read -r SEXP; } < "$cache"
+            exp="$(date -d "$SEXP" +%s 2>/dev/null || echo 0)"
+            [ "$exp" -gt $((now + 300)) ] && return 0   # still valid for 5 minutes
+        else
+            rm -f -- "$cache"
+        fi
     fi
     decrypt_key "$name"
     region="$(meta_get "$name" region)"
