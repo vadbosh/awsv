@@ -202,6 +202,7 @@ has "and names the section" 'still holds a key for: stray' "$T/out"
 
 # ------------------------------------------------- a passphrase of its own
 t "set --lock own" 0 awsv set other --lock own
+hasnt "no relock_from left" "^relock_from=" "$V/meta/other"
 yes_ [ "$(sed -n 's/^lock=//p' "$V/meta/other")" = own ]
 yes_ [ -d "$V/gnupg/other" ]
 t "the account still gives its key" 0 awsv creds other
@@ -218,10 +219,26 @@ has "ls shows the lock" '^other +direct +own ' "$T/out"
 t "set --lock own again changes nothing" 0 awsv set other --lock own
 has "and says so" 'on the own lock already' "$T/out"
 t "back to shared" 0 awsv set other --lock shared
+hasnt "none after the way back" "^relock_from=" "$V/meta/other"
 yes_ [ ! -e "$V/gnupg/other" ]                        # the unused GPG home is gone
 t "readable with the shared key again" 0 gpg --batch --quiet --decrypt "$V/keys/other.gpg"
 t "bad lock" 1 awsv set other --lock open
 has "says which are valid" "lock is 'shared' or 'own'" "$T/out"
+
+# A relock stopped half-way. relock writes relock_from and the new lock into
+# meta/NAME, then moves NAME.gpg.tmp into place, then drops relock_from.
+# Stopped before the move, the old file is in place and the old lock must open
+# it; stopped after it, the new lock. Never neither.
+cp "$V/keys/other.gpg" "$V/keys/other.gpg.tmp"            # sealed, not moved yet
+printf 'relock_from=shared\n' >> "$V/meta/other"; sed -i 's/^lock=.*/lock=own/' "$V/meta/other"
+t "stopped before the move: ls" 0 awsv ls
+has "the old lock" '^other +direct +shared ' "$T/out"
+t "and the old lock opens it" 0 awsv creds other
+has "the key comes out" 'AKIA000000000003' "$T/out"
+rm -f "$V/keys/other.gpg.tmp"                             # moved; relock_from not dropped yet
+t "stopped after the move: ls" 0 awsv ls
+has "the new lock" '^other +direct +own ' "$T/out"
+sed -i '/^relock_from=/d; s/^lock=.*/lock=shared/' "$V/meta/other"   # as it was
 printf 'AKIA000000000006\n0000000000\n' > "$T/in"
 t "add --lock own" 0 sh -c "awsv add solo --stdin --no-verify --mode direct --lock own < '$T/in'"
 has "says how to open it" 'awsv unlock solo' "$T/out"

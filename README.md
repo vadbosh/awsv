@@ -89,7 +89,9 @@ awsv set prod --lock shared     # back to the shared passphrase
 ```
 
 In step 1 gpg asks nothing when the shared passphrase is already in memory. If
-`set --lock` stops or fails half-way, the account stays on its old passphrase.
+`set --lock` stops or fails half-way, the account opens with its old passphrase,
+or with the new one once its key file is in place. It never ends up opening with
+neither.
 
 A new account can get its own passphrase at once:
 

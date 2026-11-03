@@ -170,7 +170,8 @@ FILES
   Use direct for Terraform. A session made without MFA cannot call the IAM API.
   A session also needs the account open again when it expires during a long run.
   --lock asks two things: first the passphrase that opens the account now,
-  then the new one. Stopped or failed half-way, the account stays as it was.
+  then the new one. Stopped or failed half-way, the account opens with the old
+  passphrase, or with the new one once its key file is in place. Never with neither.
 
 @ rekey | replace the key of an account
     $ awsv rekey work                   # type the new key from IAM; AWS checks it first
@@ -327,7 +328,16 @@ meta_get() { sed -n "s/^$2=//p" "$META/$1" 2>/dev/null | head -1; }
 # empty home means ~/.gnupg.
 
 valid_lock() { [ "$1" = shared ] || [ "$1" = own ] || die "lock is 'shared' or 'own', not '$1'"; }
-lock_of()  { if [ "$(meta_get "$1" lock)" = own ]; then echo own; else echo shared; fi; }
+lock_of() {   # NAME
+    local l from
+    l="$(meta_get "$1" lock)"; from="$(meta_get "$1" relock_from)"
+    # relock_from exists only while relock swaps the key file. Until the swap the
+    # new file is still NAME.gpg.tmp, and the file in place is the old lock's.
+    # Read from what is on disk, so a relock stopped anywhere opens with the
+    # lock the file is really under — the old one, or the new one.
+    [ -n "$from" ] && [ -f "$KEYS/$1.gpg.tmp" ] && l="$from"
+    if [ "$l" = own ]; then echo own; else echo shared; fi
+}
 home_for() { [ "$2" = own ] && printf '%s\n' "$LOCKS/$1"; return 0; }   # NAME LOCK
 uid_for()  { if [ "$2" = own ]; then printf 'awsv-%s\n' "$1"; else printf '%s\n' "$GPG_UID"; fi; }
 home_of()  { home_for "$1" "$(lock_of "$1")"; }
@@ -415,10 +425,16 @@ meta_set() {
     if grep -q "^$2=" "$f"; then sed -i "s|^$2=.*|$2=$3|" "$f"
     else printf '%s=%s\n' "$2" "$3" >> "$f"; fi
 }
+meta_del() { [ -f "$META/$1" ] && sed -i "/^$2=/d" "$META/$1"; return 0; }   # NAME KEY
 
 # --------------------------------------------------------- the vault itself
 
 encrypt_key() {   # NAME LOCK — AKID and SECRET are set; creates the key of the lock if needed
+    seal_key "$1" "$2"
+    mv -f "$KEYS/$1.gpg.tmp" "$KEYS/$1.gpg"
+}
+
+seal_key() {   # NAME LOCK — encrypts into NAME.gpg.tmp and leaves it there
     local h u f
     if [ "$2" = own ]; then make_own_key "$1"; else make_shared_key; fi
     h="$(home_for "$1" "$2")"; u="$(uid_for "$1" "$2")"; f="$(fpr "$h" "$u")"
@@ -429,7 +445,6 @@ encrypt_key() {   # NAME LOCK — AKID and SECRET are set; creates the key of th
         | g "$h" --quiet --yes --trust-model always --encrypt --recipient "$f" \
               --output "$KEYS/$1.gpg.tmp" \
         || die "encryption failed"
-    mv -f "$KEYS/$1.gpg.tmp" "$KEYS/$1.gpg"
 }
 
 decrypt_key() {   # NAME — sets AKID and SECRET
@@ -818,8 +833,13 @@ relock() {   # NAME LOCK
     else say "${B}Step 1 of 2:${N} type the shared passphrase, if gpg asks. When it is in memory, gpg asks nothing."; fi
     decrypt_key "$name"
     [ "$2" = own ] && say "${B}Step 2 of 2:${N} choose the new passphrase of $name."
-    encrypt_key "$name" "$2"
+    # One commit point, the mv. Before it the meta says "swapping from $old"
+    # and the old file is in place; lock_of reads that state off the disk.
+    seal_key "$name" "$2"
+    meta_set "$name" relock_from "$old"
     meta_set "$name" lock "$2"
+    mv -f "$KEYS/$name.gpg.tmp" "$KEYS/$name.gpg"
+    meta_del "$name" relock_from
     unset AKID SECRET
     [ "$old" = own ] && drop_home "$name"
     drop_cache "$name"
