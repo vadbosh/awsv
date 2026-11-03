@@ -26,6 +26,8 @@ trap cleanup EXIT
 export HOME="$T/home" GNUPGHOME="$T/gnupg" AWSV_RUN="$T/run" NO_COLOR=1
 export AWS_CONFIG_FILE="$HOME/.aws/config" AWS_SHARED_CREDENTIALS_FILE="$HOME/.aws/creds.ini"
 unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+unset XDG_DATA_HOME BASH_COMPLETION_USER_DIR
+COMP="$HOME/.local/share/bash-completion/completions/awsv"
 V="$HOME/.local/share/awsv"
 mkdir -p "$HOME/.aws" "$GNUPGHOME" "$T/bin"; chmod 700 "$GNUPGHOME"
 cp "$SRC/awsv" "$T/bin/awsv"; chmod 755 "$T/bin/awsv"
@@ -331,13 +333,62 @@ else
     has "gets no cache, and no error" 'sessions +not cached' "$T/out"
 fi
 
+
+# ------------------------------------------------------------ Tab completion
+# The function is called the way bash calls it: COMP_WORDS and COMP_CWORD set,
+# COMPREPLY read back. The last argument is the word being completed.
+comp() {
+    ( . "$SRC/awsv-completion.bash"; COMP_WORDS=("$@"); COMP_CWORD=$(($# - 1)); _awsv
+      printf '%s\n' "${COMPREPLY[@]}" ) | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+same() {   # name, want, got
+    if [ "$2" = "$3" ]; then pass=$((pass + 1)); else
+        fail=$((fail + 1)); echo "FAIL $1: got '$3', want '$2'"; fi
+}
+words() { tr ' ' '\n' | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//'; }
+names="$(for f in "$V"/keys/*.gpg; do f="${f##*/}"; echo "${f%.gpg}"; done | words)"
+n1="${names%% *}"
+same "commands: the COMMANDS line of help, and help" \
+    "$( { awsv help | sed -n '/^COMMANDS/{n;p;}'; echo help; } | words)" "$(comp awsv '')"
+same "help topics: the ones awsv knows" \
+    "$(awsv help nosuch 2>&1 | sed -n 's/.*topics: //p' | words)" "$(comp awsv help '')"
+same "a prefix narrows the commands" "status" "$(comp awsv sta)"
+same "account names come from keys/" "$names" "$(comp awsv use '')"
+same "and for show, rm, set, lock" "$names" "$(comp awsv show '')"
+same "add takes a new name: nothing to offer" "" "$(comp awsv add '')"
+same "options after the name" "--lock --mode --region" "$(comp awsv set "$n1" '')"
+same "an option given is not offered again" "--lock --region" "$(comp awsv set "$n1" --mode direct '')"
+same "--lock values" "own shared" "$(comp awsv set "$n1" --lock '')"
+same "--mode values" "direct session" "$(comp awsv add new --mode '')"
+same "--region values" "eu-central-1 eu-central-2" "$(comp awsv add new --region eu-cent)"
+same "rm offers --yes" "--yes" "$(comp awsv rm "$n1" '')"
+same "unlock: names, all and durations" "$(echo "$names all 30m 1h 8h" | words)" "$(comp awsv unlock '')"
+same "unlock after a duration: names and all" "$(echo "$names all" | words)" "$(comp awsv unlock 8h '')"
+same "unlock after all: durations" "1h 30m 8h" "$(comp awsv unlock all '')"
+same "exec after the name: --" "--" "$(comp awsv exec "$n1" '')"
+case " $(comp awsv exec "$n1" -- aw) " in
+    *" awsv "*) pass=$((pass + 1)) ;;
+    *) fail=$((fail + 1)); echo "FAIL exec after --: a command name is not offered" ;;
+esac
+printf '[client]\naws_access_key_id = AKIA000000000009\n\n#[nexum]\n# x\n[odd] # c\n' > "$T/c.ini"
+same "import offers sections, commented ones too" "client nexum odd" \
+    "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import '')"
+same "no key line reaches the reply" "" \
+    "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import AKIA)"
+same "import options after the section" "--as --keep --lock --mode --no-verify --region" \
+    "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import client '')"
+same "no vault: no names, no error" "" "$(AWSV_HOME="$T/none" comp awsv use '')"
 # --------------------------------------------------------------- install.sh
 P="$T/prefix"
 t "install --check" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh" --check
 t "install --dry-run writes nothing" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh" --dry-run
 yes_ [ ! -e "$P/awsv" ]
+yes_ [ ! -e "$COMP" ]
 t "install" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh"
 yes_ cmp -s "$SRC/awsv" "$P/awsv"
+yes_ cmp -s "$SRC/awsv-completion.bash" "$COMP"
+t "BASH_COMPLETION_USER_DIR: its first directory" 0 env PATH="$P:$PATH" PREFIX="$P" BASH_COMPLETION_USER_DIR="$T/bcu:$T/bcu2" "$SRC/install.sh"
+yes_ cmp -s "$SRC/awsv-completion.bash" "$T/bcu/completions/awsv"
 t "install again is a no-op" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh"
 has "up to date" 'up to date' "$T/out"
 t "uninstall refused while the config uses awsv" 1 env PREFIX="$P" "$SRC/install.sh" --uninstall
@@ -345,6 +396,7 @@ awsv use other >/dev/null
 t "still refused" 1 env PREFIX="$P" "$SRC/install.sh" --uninstall
 t "uninstall --force" 0 env PREFIX="$P" "$SRC/install.sh" --uninstall --force
 yes_ [ ! -e "$P/awsv" ]
+yes_ [ ! -e "$COMP" ]
 yes_ [ -s "$V/keys/other.gpg" ]   # the vault survives the uninstall
 
 echo "awsv: $pass passed, $fail failed"

@@ -129,6 +129,12 @@ cd awsv              # this repository
 `./install.sh --check` only checks and changes nothing. The installer does not
 create keys and does not touch `~/.aws`.
 
+The installer also adds Tab completion for bash. In a new terminal, Tab after
+awsv offers the commands, then the account names, the options and their values.
+The names come from the file names in `keys/`; nothing is decrypted. This needs
+the `bash-completion` package. Without it, add this line to `~/.bashrc`:
+`. ~/.local/share/bash-completion/completions/awsv`.
+
 ## First run
 
 ### You already have keys in `~/.aws/credentials`
@@ -226,6 +232,7 @@ Outside this directory:
 | `~/.aws/config` | awsv writes a block between `# >>> awsv` and `# <<< awsv <<<`. The rest stays yours |
 | `~/.aws/credentials` | empty |
 | `$XDG_RUNTIME_DIR/awsv/` | cached one-hour sessions, in memory. A logout or a reboot deletes them |
+| `~/.local/share/bash-completion/completions/awsv` | Tab completion for bash, written by `./install.sh` |
 
 Each file in `keys/` holds two lines, `AccessKeyId=…` and `SecretAccessKey=…`,
 encrypted. The block in `~/.aws/config` has `[default]` and one
@@ -412,5 +419,6 @@ gpg-agent are not touched. One check calls AWS STS with a fake key;
 ```
 
 It refuses while `~/.aws/config` still calls awsv, because every `aws` command
-would then fail. Remove the accounts first, or add `--force`. The vault in
-`~/.local/share/awsv` stays; delete it yourself.
+would then fail. Remove the accounts first, or add `--force`. Tab completion
+is removed together with the command. The vault in `~/.local/share/awsv` stays; delete it
+yourself.

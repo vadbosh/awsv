@@ -7,7 +7,9 @@
 #   ./install.sh --dry-run    check, then say what would change
 #   ./install.sh --uninstall  remove the installed command; the vault stays
 #
-# One file is installed: awsv into $PREFIX (default ~/.local/bin).
+# Two files are installed: awsv into $PREFIX (default ~/.local/bin), and its
+# Tab completion into the directory bash-completion reads for this user
+# (default ~/.local/share/bash-completion/completions/awsv).
 # The installer does not create the GPG key and does not touch ~/.aws.
 # Run 'awsv init' after it.
 
@@ -15,6 +17,11 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 DEST="$PREFIX/awsv"
+# bash-completion looks in each directory of BASH_COMPLETION_USER_DIR, else in
+# $XDG_DATA_HOME/bash-completion; the first one is where this file goes.
+COMPDIR="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}"
+COMPDIR="${COMPDIR%%:*}/completions"
+COMP="$COMPDIR/awsv"
 CONFIG="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -119,6 +126,15 @@ check() {
         fi
     fi
 
+    # Tab completion. Without the package the file is still installed, but
+    # nothing loads it: it has to be sourced from ~/.bashrc.
+    if [ -r /usr/share/bash-completion/bash_completion ] || [ -r /etc/bash_completion ]; then
+        ok "bash-completion"
+    else
+        soft "no bash-completion — Tab after 'awsv' will not offer commands"
+        hint "apt install bash-completion, or add to ~/.bashrc: . $COMP"
+    fi
+
     case ":$PATH:" in
         *":$PREFIX:"*) ok "$PREFIX is in PATH" ;;
         *) soft "$PREFIX is not in PATH — 'awsv' will not be found by name"
@@ -134,21 +150,27 @@ check() {
 
 # ------------------------------------------------------------ the actions
 
-install_it() {
-    local dry="$1"
-    printf '\n%sInstall%s\n' "$B" "$N"
-    if [ -f "$DEST" ] && cmp -s "$SRC/awsv" "$DEST"; then
-        ok "$DEST is up to date"
+install_file() {   # dry source destination mode
+    local dry="$1" src="$2" dest="$3" mode="$4"
+    if [ -f "$dest" ] && cmp -s "$src" "$dest"; then
+        ok "$dest is up to date"
         return 0
     fi
     if [ "$dry" = 1 ]; then
-        printf '  would write %s\n' "$DEST"
+        printf '  would write %s\n' "$dest"
         return 0
     fi
-    mkdir -p "$PREFIX"
-    install -m 0755 "$SRC/awsv" "$DEST" || die "could not write $DEST"
-    cmp -s "$SRC/awsv" "$DEST" || die "$DEST differs from the source after copying"
-    ok "installed $DEST"
+    mkdir -p "$(dirname "$dest")"
+    install -m "$mode" "$src" "$dest" || die "could not write $dest"
+    cmp -s "$src" "$dest" || die "$dest differs from the source after copying"
+    ok "installed $dest"
+}
+
+install_it() {
+    local dry="$1"
+    printf '\n%sInstall%s\n' "$B" "$N"
+    install_file "$dry" "$SRC/awsv" "$DEST" 0755
+    install_file "$dry" "$SRC/awsv-completion.bash" "$COMP" 0644
 }
 
 uninstall_it() {
@@ -162,6 +184,7 @@ uninstall_it() {
     fi
     rm -f "$DEST"
     ok "removed $DEST"
+    if [ -e "$COMP" ]; then rm -f "$COMP"; ok "removed $COMP"; fi
     printf '%sThe vault is still in %s: keys, settings and backups are untouched.%s\n' \
         "$Y" "${AWSV_HOME:-$HOME/.local/share/awsv}" "$N"
 }
@@ -185,6 +208,7 @@ case "$mode" in
     dry)       check || exit 1; install_it 1 ;;
     install)   check || exit 1; install_it 0
                printf '\nNext: %sawsv init%s, then %sawsv import SECTION --as NAME%s or %sawsv add NAME%s\n' \
-                   "$B" "$N" "$B" "$N" "$B" "$N" ;;
+                   "$B" "$N" "$B" "$N" "$B" "$N"
+               printf 'Tab after awsv offers commands and account names in a new terminal.\n' ;;
     uninstall) uninstall_it "$force" ;;
 esac
