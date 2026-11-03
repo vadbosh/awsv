@@ -464,12 +464,12 @@ decrypt_key() {   # NAME — sets AKID and SECRET
 # no credentials file. That is what stops credential_process from calling itself.
 # The values go in through exported variables, never through the argument list.
 aws_with() {   # AKID SECRET TOKEN(or "") -- aws arguments
-    local a="$1" s="$2" t="$3"; shift 3
+    local akid="$1" secret="$2" token="$3"; shift 3
     (
         unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN
         export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
-        export AWS_ACCESS_KEY_ID="$a" AWS_SECRET_ACCESS_KEY="$s"
-        [ -n "$t" ] && export AWS_SESSION_TOKEN="$t"
+        export AWS_ACCESS_KEY_ID="$akid" AWS_SECRET_ACCESS_KEY="$secret"
+        [ -n "$token" ] && export AWS_SESSION_TOKEN="$token"
         exec aws "$@"
     )
 }
@@ -549,7 +549,9 @@ render_block() {
 check_config() {
     local c; c="$(conflicts)"
     [ -z "$c" ] && return 0
-    die "~/.aws/config already defines [${c% }] outside the awsv block. For [default] run 'awsv init --take-default'; rename or remove any other by hand."
+    # The file checked is $CONFIG — AWS_CONFIG_FILE when it is set — shown with ~
+    # for $HOME, so the default reads ~/.aws/config, as the README quotes it.
+    die "${CONFIG/#"$HOME"/\~} already defines [${c% }] outside the awsv block. For [default] run 'awsv init --take-default'; rename or remove any other by hand."
 }
 
 write_config() {

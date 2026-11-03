@@ -88,6 +88,7 @@ t "default is reserved" 1 awsv import default --no-verify
 has "says why" 'reserved' "$T/out"
 t "conflict with [profile default] stops the import" 1 awsv import default --as wl --no-verify
 has "names the conflict" 'take-default' "$T/out"
+has "and the file, as the README quotes it" '~/.aws/config already defines \[default\]' "$T/out"
 yes_ [ ! -e "$V/keys/wl.gpg" ]
 has "credentials untouched on failure" '^\[default\]' "$AWS_SHARED_CREDENTIALS_FILE"
 
