@@ -8,8 +8,8 @@
 # Account names are the file names in keys/, section names are the [headers]
 # of ~/.aws/credentials. Nothing is decrypted, and no key line is read.
 
-# The commands of the COMMANDS line in "awsv help", plus help itself. The tests
-# compare both lists with awsv, so a new command fails them until it is added.
+# The commands listed under COMMANDS in "awsv help". The tests compare this
+# list and the topics with awsv, so a new command fails them until it is added.
 _awsv_commands="init add import ls use exec set rekey rm show passwd unlock lock status help"
 _awsv_topics="init add import ls use exec set rekey rm show passwd unlock lock status passphrase"
 # The commercial regions known when this was written. Any region awsv accepts

@@ -348,8 +348,8 @@ same() {   # name, want, got
 words() { tr ' ' '\n' | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//'; }
 names="$(for f in "$V"/keys/*.gpg; do f="${f##*/}"; echo "${f%.gpg}"; done | words)"
 n1="${names%% *}"
-same "commands: the COMMANDS line of help, and help" \
-    "$( { awsv help | sed -n '/^COMMANDS/{n;p;}'; echo help; } | words)" "$(comp awsv '')"
+same "commands: the ones listed under COMMANDS in help" \
+    "$(awsv help | sed -n '/^COMMANDS$/,/^$/p' | awk '$1 == "awsv" {print $2}' | words)" "$(comp awsv '')"
 same "help topics: the ones awsv knows" \
     "$(awsv help nosuch 2>&1 | sed -n 's/.*topics: //p' | words)" "$(comp awsv help '')"
 same "a prefix narrows the commands" "status" "$(comp awsv sta)"

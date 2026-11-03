@@ -99,7 +99,21 @@ SEE A STORED KEY
   ! Run them only in your own terminal.
 
 COMMANDS
-  init  add  import  ls  use  exec  set  rekey  rm  show  passwd  unlock  lock  status
+    $ awsv use NAME                       # switch the [default] account: plain aws runs as NAME
+    $ awsv exec NAME -- CMD               # run one command as NAME; [default] stays as it is
+    $ awsv ls                             # list the accounts; * marks [default]
+    $ awsv status                         # what is open, what is locked, what is left to move
+    $ awsv unlock 8h                      # open for a working day; or 30m, or NAME 30m
+    $ awsv lock                           # close everything now
+    $ awsv add NAME                       # store a new account: type its key in
+    $ awsv import SECTION                 # move a key out of ~/.aws/credentials
+    $ awsv set NAME --mode direct         # change the region, the mode or the passphrase
+    $ awsv rekey NAME                     # a new key for an account, after rotating it in IAM
+    $ awsv rm NAME                        # remove an account from the vault
+    $ awsv passwd                         # change a passphrase
+    $ awsv show NAME                      # print a stored key; only in your own terminal
+    $ awsv init                           # set up the vault, once
+    $ awsv help COMMAND                   # one command in full, with examples
 
 FILES
   ~/.local/share/awsv/keys/NAME.gpg   the key of one account, encrypted
