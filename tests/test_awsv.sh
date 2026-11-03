@@ -26,6 +26,10 @@ trap cleanup EXIT
 export HOME="$T/home" GNUPGHOME="$T/gnupg" AWSV_RUN="$T/run" NO_COLOR=1
 export AWS_CONFIG_FILE="$HOME/.aws/config" AWS_SHARED_CREDENTIALS_FILE="$HOME/.aws/creds.ini"
 unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+# pinentry opens the terminal GPG_TTY names, or a window on DISPLAY: with them set,
+# a test that expects "no terminal" drew a passphrase prompt over the terminal
+# of whoever ran the tests, and left mouse tracking on in it.
+unset GPG_TTY DISPLAY WAYLAND_DISPLAY
 unset XDG_DATA_HOME BASH_COMPLETION_USER_DIR
 COMP="$HOME/.local/share/bash-completion/completions/awsv"
 V="$HOME/.local/share/awsv"
