@@ -1,0 +1,132 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 40
+  }
+}
+
+classes: {
+  spine: {
+    style: {
+      fill: "#1d4ed8"
+      stroke: "#1e3a8a"
+      stroke-width: 2
+      font-color: "#ffffff"
+      font-size: 18
+      bold: true
+      border-radius: 6
+    }
+  }
+  layer: {
+    style: {
+      fill: "#f8fafc"
+      stroke: "#94a3b8"
+      stroke-width: 2
+      font-color: "#0f172a"
+      font-size: 16
+      border-radius: 6
+    }
+  }
+  focus: {
+    style: {
+      fill: "#fff7ed"
+      stroke: "#ea580c"
+      stroke-width: 3
+      font-color: "#7c2d12"
+      font-size: 16
+      bold: true
+      border-radius: 6
+    }
+  }
+  comp: {
+    style: {
+      fill: "#ffffff"
+      stroke: "#64748b"
+      font-color: "#0f172a"
+      border-radius: 4
+    }
+  }
+  hot: {
+    style: {
+      fill: "#ffedd5"
+      stroke: "#ea580c"
+      stroke-width: 2
+      font-color: "#7c2d12"
+      border-radius: 4
+    }
+  }
+  store: {
+    shape: cylinder
+    style: {
+      fill: "#eff6ff"
+      stroke: "#1d4ed8"
+      font-color: "#0f172a"
+    }
+  }
+  ext: {
+    style: {
+      fill: "#f1f5f9"
+      stroke: "#64748b"
+      stroke-dash: 3
+      font-color: "#475569"
+    }
+  }
+  dep: {
+    style: {
+      stroke: "#334155"
+      stroke-width: 2
+      font-color: "#334155"
+    }
+  }
+  read: {
+    style: {
+      stroke: "#1d4ed8"
+      stroke-width: 2
+      stroke-dash: 4
+      font-color: "#1d4ed8"
+    }
+  }
+  cut: {
+    style: {
+      stroke: "#ea580c"
+      stroke-width: 3
+      font-color: "#c2410c"
+      bold: true
+    }
+  }
+  gone: {
+    style: {
+      stroke: "#cbd5e1"
+      stroke-width: 2
+      stroke-dash: 4
+      font-color: "#94a3b8"
+    }
+  }
+}
+
+# zone — large container: white field, accent border, accent title.
+# A big solid fill (spine) overwhelms the diagram when it wraps many nodes.
+classes.zone: {
+  style: {
+    fill: "#ffffff"
+    stroke: "#1d4ed8"
+    stroke-width: 3
+    font-color: "#1d4ed8"
+    font-size: 18
+    bold: true
+    border-radius: 8
+  }
+}
+
+classes.zone-warm: {
+  style: {
+    fill: "#fffbf5"
+    stroke: "#ea580c"
+    stroke-width: 3
+    font-color: "#c2410c"
+    font-size: 18
+    bold: true
+    border-radius: 8
+  }
+}

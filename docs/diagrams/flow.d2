@@ -1,0 +1,32 @@
+...@theme
+
+vars: {
+  d2-config: {
+    layout-engine: dagre
+  }
+}
+
+direction: down
+
+title: "How a key reaches aws\nNo tool reads a key file: aws asks awsv, and awsv asks gpg to open the vault." {
+  shape: text
+  near: top-center
+  style: {font-size: 20; bold: true; font-color: "#0f172a"}
+}
+
+tool: "aws, Terraform, an SDK" {class: spine}
+awsv: "awsv creds work" {class: spine}
+key: "keys/work.gpg\nthe key, encrypted" {class: store}
+agent: "gpg-agent\nkeeps the passphrase for the unlock window;\nlocked: asks for it, only in a terminal" {class: layer}
+mode: "mode of work?" {shape: diamond; class: comp}
+sts: "AWS STS\na one-hour session" {class: ext}
+cache: "session cache\n\$XDG_RUNTIME_DIR/awsv/work" {class: store}
+
+tool -> awsv: "~/.aws/config:\ncredential_process" {class: dep}
+awsv -> key: "decrypts with gpg" {class: dep}
+key -> agent: "needs the passphrase" {class: read}
+awsv -> mode: {class: dep}
+mode -> tool: "direct:\nthe key itself" {class: dep}
+mode -> sts: "session" {class: dep}
+sts -> cache: "kept until it expires" {class: read}
+cache -> tool: "the session" {class: dep}

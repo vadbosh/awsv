@@ -57,7 +57,7 @@ awsv init >/dev/null 2>&1
 
 # Every account name the documents use, so that commands naming them find one.
 i=1
-for n in work client nexum old prod other; do
+for n in work client old prod other; do
     printf 'AKIA00000000000%d\n0000000000\n' "$i" | awsv add "$n" --stdin --no-verify --mode direct >/dev/null 2>&1
     i=$((i + 1))
 done
@@ -71,9 +71,9 @@ tar -C "$HOME" -cf "$T/pristine.tar" .        # each command starts from this st
 {
     awsv --help
     awsv status
-    # README: only what a reader is meant to type — code blocks and `inline code`
-    awk '/^```/ {f = !f; next} f' "$SRC/README.md" "$SRC/README.RU.md"
-    grep -ohE '`[^`]+`' "$SRC/README.md" "$SRC/README.RU.md"
+    # README and docs/: only what a reader is meant to type — code blocks and `inline code`
+    awk '/^```/ {f = !f; next} f' "$SRC/README.md" "$SRC/README.RU.md" "$SRC"/docs/*.md
+    grep -ohE '`[^`]+`' "$SRC/README.md" "$SRC/README.RU.md" "$SRC"/docs/*.md
     # messages: the string literals of awsv
     grep -ohE '"[^"]*awsv [^"]*"|'"'"'[^'"'"']*awsv [^'"'"']*'"'" "$SRC/awsv"
 } | grep -v 'usage: awsv' > "$T/text"   # a usage line describes syntax; it is not a command to copy
@@ -119,7 +119,7 @@ check "the gpg name in the recovery steps" 'gpg --list-secret-keys "awsv local v
 check "gpg has the recovery option" 'gpg --dump-options | grep -qx -- --delete-secret-and-public-keys'
 check "gpg has the passphrase option" 'gpg --dump-options | grep -qx -- --change-passphrase'
 check "aws configure list" 'aws configure list'
-for n in work client nexum old prod; do   # every profile the docs name exists
+for n in work client old prod; do   # every profile the docs name exists
     check "profile $n is in the config" "aws configure list --profile $n"
 done
 for o in --check --dry-run; do

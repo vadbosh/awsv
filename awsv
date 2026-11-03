@@ -142,9 +142,9 @@ FILES
   With a passphrase of its own, add asks you to choose it, twice.
 
 @ import | move a key from ~/.aws/credentials into the vault
-    $ awsv import nexum                 # works for [nexum] and for a commented #[nexum]
+    $ awsv import client                # works for [client] and for a commented #[client]
     $ awsv import default --as work     # "default" is reserved, so give it a name
-    $ awsv import nexum --lock own      # nexum gets a passphrase of its own
+    $ awsv import client --lock own     # client gets a passphrase of its own
     $ awsv status                       # repeat imports until "no keys left"
   The section leaves the file. An encrypted copy of the file goes to backup/.
   With a passphrase of its own, import asks you to choose it, twice.
@@ -153,20 +153,20 @@ FILES
     $ awsv ls                           # * marks [default]; then mode, lock, region, account
 
 @ use | change the [default] account
-    $ awsv use nexum                    # plain "aws ..." now works as nexum
-    $ aws s3 ls                         # runs as nexum
+    $ awsv use client                   # plain "aws ..." now works as client
+    $ aws s3 ls                         # runs as client
   This replaces commenting sections in and out.
 
 @ exec | run one command as another account
-    $ awsv exec nexum -- terraform plan # [default] does not change
-    $ aws --profile nexum s3 ls         # the same for aws alone
+    $ awsv exec client -- terraform plan  # [default] does not change
+    $ aws --profile client s3 ls        # the same for aws alone
 
 @ set | change the region, the mode or the passphrase of an account
-    $ awsv set nexum --region us-east-2
+    $ awsv set client --region us-east-2
     $ awsv set work --mode direct       # tools get the key itself
     $ awsv set work --mode session      # tools get a one-hour session; the default
-    $ awsv set nexum --lock own         # nexum gets a passphrase of its own
-    $ awsv set nexum --lock shared      # nexum goes back to the shared passphrase
+    $ awsv set client --lock own        # client gets a passphrase of its own
+    $ awsv set client --lock shared     # client goes back to the shared passphrase
   Use direct for Terraform. A session made without MFA cannot call the IAM API.
   A session also needs the account open again when it expires during a long run.
   --lock asks two things: first the passphrase that opens the account now,
@@ -206,13 +206,13 @@ FILES
 
 @ passwd | change a passphrase
     $ awsv passwd                       # the shared one: the current passphrase, then the new one twice
-    $ awsv passwd nexum                 # the passphrase that opens nexum: its own, or the shared one
+    $ awsv passwd client                # the passphrase that opens client: its own, or the shared one
   The files in keys/ do not change. A passphrase locks a GPG key, not each file.
 
 @ unlock | open for a time you choose
     $ awsv unlock 30m                   # the passphrase of the [default] account, for 30 minutes
     $ awsv unlock 8h                    # a working day; also what plain "awsv unlock" does
-    $ awsv unlock nexum 30m             # the passphrase that opens nexum
+    $ awsv unlock client 30m            # the passphrase that opens client
     $ awsv unlock all 8h                # every passphrase, one after another
     $ awsv unlock 1h30m                 # any mix of hours and minutes, up to 24h
     $ awsv status                       # shows when each one closes
@@ -222,7 +222,7 @@ FILES
 
 @ lock | close now
     $ awsv lock                         # every passphrase, and every cached session
-    $ awsv lock nexum                   # only the passphrase that opens nexum
+    $ awsv lock client                  # only the passphrase that opens client
 
 @ status | check the state
     $ awsv status
@@ -239,11 +239,11 @@ FILES
   init asks which one new accounts get. Each account can be switched later.
 
   Give one account its own passphrase, keep the others shared:
-    $ awsv set nexum --lock own         # the current passphrase, then a new one for nexum
-    $ awsv unlock nexum 30m             # opens nexum only
-    $ awsv lock nexum                   # closes nexum only
-    $ awsv passwd nexum                 # changes the passphrase of nexum only
-    $ awsv set nexum --lock shared      # back to the shared passphrase
+    $ awsv set client --lock own        # the current passphrase, then a new one for client
+    $ awsv unlock client 30m            # opens client only
+    $ awsv lock client                  # closes client only
+    $ awsv passwd client                # changes the passphrase of client only
+    $ awsv set client --lock shared     # back to the shared passphrase
   Every new account with its own passphrase:
     $ awsv init --lock own              # accounts that exist keep their lock
     $ awsv add prod --lock shared       # one account can still take the shared one
@@ -386,7 +386,7 @@ names() {   # every account; with an argument, only the accounts on that lock
 }
 joined() { tr '\n' ' ' | sed 's/ $//; s/ /, /g'; }
 
-# What one lock opens, in words: "wl, x — the shared passphrase" or "nexum only".
+# What one lock opens, in words: "work, x — the shared passphrase" or "client only".
 scope_of() {   # NAME
     if [ "$(lock_of "$1")" = own ]; then printf '%s only, with its own passphrase\n' "$1"
     else printf '%s — every account on the shared passphrase\n' "$(names shared | joined)"; fi

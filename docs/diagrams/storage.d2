@@ -1,0 +1,57 @@
+...@theme
+
+grid-columns: 2
+grid-gap: 40
+
+title: "Where awsv keeps secrets and data\nOrange: a secret. White: not secret. ~ is the home of the user who runs awsv." {
+  shape: text
+  near: top-center
+  style: {font-size: 20; bold: true; font-color: "#0f172a"}
+}
+
+vault: "~/.local/share/awsv/" {
+  grid-columns: 2
+  grid-gap: 24
+  class: zone
+  label.near: top-left
+  keys: "keys/NAME.gpg\nthe key of each account\nencrypted" {class: hot}
+  gnupg: "gnupg/NAME/\nGPG key of an account\nwith its own passphrase" {class: hot}
+  backup: "backup/\ncredentials.*.gpg: old keys, encrypted\nconfig.*, bashrc.*: plain copies" {class: hot}
+  meta: "meta/NAME\nregion, mode, lock,\naccount number" {class: comp}
+  small: "active · lock · unlocked-until\n[default] name, lock for new accounts,\nend of the unlock window" {class: comp}
+}
+
+gpg: "~/.gnupg/" {
+  grid-columns: 1
+  grid-gap: 24
+  class: zone
+  label.near: top-left
+  shared: "GPG key of the\nshared passphrase" {class: hot}
+  agentconf: "gpg-agent.conf\nhow long the passphrase\nstays in memory" {class: comp}
+}
+
+aws: "~/.aws/" {
+  grid-columns: 1
+  grid-gap: 24
+  class: zone
+  label.near: top-left
+  config: "config\nprofiles that call\nawsv creds NAME" {class: comp}
+  creds: "credentials\nstays empty" {class: comp}
+}
+
+run: "\$XDG_RUNTIME_DIR/awsv/" {
+  grid-columns: 1
+  grid-gap: 24
+  class: zone-warm
+  label.near: top-left
+  session: "NAME\none-hour session, plain text\nin memory; gone after reboot" {class: hot}
+}
+
+bin: "installed" {
+  grid-columns: 1
+  grid-gap: 24
+  class: zone
+  label.near: top-left
+  cmd: "~/.local/bin/awsv" {class: comp}
+  comp: "~/.local/share/bash-completion/\ncompletions/awsv" {class: comp}
+}

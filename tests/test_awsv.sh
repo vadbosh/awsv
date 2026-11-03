@@ -70,10 +70,10 @@ gpg --batch --pinentry-mode loopback --passphrase '' \
     --quick-generate-key "awsv local vault" future-default default never 2>/dev/null
 
 # The layout this machine had: [profile default] plus commented SSO lines in the config,
-# an active [default] and a commented #[nexum] in the credentials file.
+# an active [default] and a commented #[beta] in the credentials file.
 printf '[profile default]\noutput = json\nregion = us-east-1\n\n#[sso-session thoth]\n#sso_region = us-east-1\n' \
     > "$AWS_CONFIG_FILE"
-printf '[default]\naws_access_key_id = AKIA000000000001\naws_secret_access_key = 0000000000\n\n#[nexum]\n#aws_access_key_id = AKIA000000000002\n#aws_secret_access_key = 0000000000\n' \
+printf '[default]\naws_access_key_id = AKIA000000000001\naws_secret_access_key = 0000000000\n\n#[beta]\n#aws_access_key_id = AKIA000000000002\n#aws_secret_access_key = 0000000000\n' \
     > "$AWS_SHARED_CREDENTIALS_FILE"
 
 # ------------------------------------------------------------------ init
@@ -86,10 +86,10 @@ yes_ [ "$(grep -c GPG_TTY "$HOME/.bashrc")" = 1 ]   # a second init does not add
 # ---------------------------------------------------------------- import
 t "default is reserved" 1 awsv import default --no-verify
 has "says why" 'reserved' "$T/out"
-t "conflict with [profile default] stops the import" 1 awsv import default --as wl --no-verify
+t "conflict with [profile default] stops the import" 1 awsv import default --as alpha --no-verify
 has "names the conflict" 'take-default' "$T/out"
 has "and the file, as the README quotes it" '~/.aws/config already defines \[default\]' "$T/out"
-yes_ [ ! -e "$V/keys/wl.gpg" ]
+yes_ [ ! -e "$V/keys/alpha.gpg" ]
 has "credentials untouched on failure" '^\[default\]' "$AWS_SHARED_CREDENTIALS_FILE"
 
 t "take-default" 0 awsv init --take-default
@@ -97,53 +97,53 @@ has "default commented out" '^# awsv: \[profile default\]' "$AWS_CONFIG_FILE"
 has "SSO comment left alone" '^#\[sso-session thoth\]' "$AWS_CONFIG_FILE"
 hasnt "a blank line is not turned into a comment" '^# awsv: *$' "$AWS_CONFIG_FILE"
 
-t "import active section" 0 awsv import default --as wl --no-verify --mode direct
-yes_ [ -s "$V/keys/wl.gpg" ]
-hasnt "vault file is not plain text" 'AKIA000000000001' "$V/keys/wl.gpg"
+t "import active section" 0 awsv import default --as alpha --no-verify --mode direct
+yes_ [ -s "$V/keys/alpha.gpg" ]
+hasnt "vault file is not plain text" 'AKIA000000000001' "$V/keys/alpha.gpg"
 hasnt "section removed from credentials" '^\[default\]' "$AWS_SHARED_CREDENTIALS_FILE"
 yes_ ls "$V"/backup/credentials.*.gpg >/dev/null
-t "import commented section" 0 awsv import nexum --no-verify --mode direct
-hasnt "commented section removed" 'nexum' "$AWS_SHARED_CREDENTIALS_FILE"
+t "import commented section" 0 awsv import beta --no-verify --mode direct
+hasnt "commented section removed" 'beta' "$AWS_SHARED_CREDENTIALS_FILE"
 t "import missing section" 1 awsv import nosuch --no-verify
 
 # ---------------------------------------------------------------- config
-has "[default] calls awsv for wl" 'credential_process = .*/awsv creds wl$' "$AWS_CONFIG_FILE"
-has "profile per account" '^\[profile nexum\]' "$AWS_CONFIG_FILE"
+has "[default] calls awsv for alpha" 'credential_process = .*/awsv creds alpha$' "$AWS_CONFIG_FILE"
+has "profile per account" '^\[profile beta\]' "$AWS_CONFIG_FILE"
 yes_ [ "$(grep -c '^\[default\]' "$AWS_CONFIG_FILE")" = 1 ]
 t "ls" 0 awsv ls
-has "wl is the default" '^wl +\*' "$T/out"
+has "alpha is the default" '^alpha +\*' "$T/out"
 
 # --------------------------------------------------- the AWS CLI end to end
 t "aws sees the vault" 0 aws configure list
 has "credentials come from the process" 'custom-process' "$T/out"
-has "key of wl" '0001' "$T/out"
-t "use nexum" 0 awsv use nexum
+has "key of alpha" '0001' "$T/out"
+t "use beta" 0 awsv use beta
 t "aws follows use" 0 aws configure list
-has "key of nexum" '0002' "$T/out"
+has "key of beta" '0002' "$T/out"
 if [ "$NET" = 1 ]; then
     t "fake key reaches AWS" 254 aws sts get-caller-identity
     has "AWS rejected exactly that key" 'InvalidClientTokenId' "$T/out"
 fi
 
 # ----------------------------------------------------------- creds / exec
-t "creds prints JSON" 0 awsv creds nexum
+t "creds prints JSON" 0 awsv creds beta
 yes_ python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["Version"]==1 and d["AccessKeyId"].endswith("0002")' "$T/out"
-env -u NO_COLOR "$T/bin/awsv" creds nexum > "$T/raw" 2>&1
+env -u NO_COLOR "$T/bin/awsv" creds beta > "$T/raw" 2>&1
 hasnt "no colour in the JSON, even with colour allowed" $'\e' "$T/raw"
-t "exec gets the key" 0 awsv exec wl -- sh -c 'printf %s "$AWS_ACCESS_KEY_ID"'
+t "exec gets the key" 0 awsv exec alpha -- sh -c 'printf %s "$AWS_ACCESS_KEY_ID"'
 has "exec env" '^AKIA000000000001$' "$T/out"
 if [ "$NET" = 1 ]; then
-    t "session mode" 0 awsv set nexum --mode session
-    t "session refused for a fake key" 1 awsv creds nexum
+    t "session mode" 0 awsv set beta --mode session
+    t "session refused for a fake key" 1 awsv creds beta
     has "says STS refused" 'STS refused' "$T/out"
-    t "back to direct" 0 awsv set nexum --mode direct
+    t "back to direct" 0 awsv set beta --mode direct
 fi
 
 # ------------------------------------------------------------- the checks
 t "bad name" 1 awsv add Bad_Name --stdin
 t "add default refused" 1 awsv add default --stdin
-t "bad region" 1 awsv set nexum --region nowhere
-t "bad mode" 1 awsv set nexum --mode open
+t "bad region" 1 awsv set beta --region nowhere
+t "bad mode" 1 awsv set beta --mode open
 printf 'NOTAKEY\nsecret\n' > "$T/in"
 t "add rejects a malformed key id" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
 printf 'AKIA000000000003\n0000000000\n' > "$T/in"
@@ -179,7 +179,7 @@ t "help" 0 awsv --help
 has "help lists init" 'awsv init' "$T/out"
 yes_ [ "$(grep -cE '^[a-z]+ — ' "$T/out")" = 15 ]   # every command has its section, and passphrase
 t "help passphrase" 0 awsv help passphrase
-has "explains both" 'awsv set nexum --lock own' "$T/out"
+has "explains both" 'awsv set client --lock own' "$T/out"
 t "help topic" 0 awsv help import
 has "the topic gives its steps" 'awsv import default --as' "$T/out"
 hasnt "a topic shows only itself" '^COMMANDS' "$T/out"
@@ -189,13 +189,13 @@ has "and lists the real ones" 'topics: init add import' "$T/out"
 # ----------------------------------------------------------------- status
 t "status" 0 awsv status
 has "no plain keys" 'no keys left' "$T/out"
-has "the [default] account is marked" '^\* nexum +\[default\]' "$T/out"
-yes_ [ "$(sed -n '/^ACCOUNTS/,$p' "$T/out" | grep -m1 -E '^(\* |  )[a-z]' | awk '{print $2}')" = nexum ]   # and comes first
-has "the default is ACTIVE" '^\* nexum +\[default\] +ACTIVE:(UN)?LOCKED' "$T/out"
-has "the others are NOT ACTIVE" '^  wl +NOT ACTIVE:(UN)?LOCKED' "$T/out"
+has "the [default] account is marked" '^\* beta +\[default\]' "$T/out"
+yes_ [ "$(sed -n '/^ACCOUNTS/,$p' "$T/out" | grep -m1 -E '^(\* |  )[a-z]' | awk '{print $2}')" = beta ]   # and comes first
+has "the default is ACTIVE" '^\* beta +\[default\] +ACTIVE:(UN)?LOCKED' "$T/out"
+has "the others are NOT ACTIVE" '^  alpha +NOT ACTIVE:(UN)?LOCKED' "$T/out"
 yes_ [ "$(grep -oE 'ACTIVE:(UN)?LOCKED' "$T/out" | sort -u | wc -l)" = 1 ]   # one vault, one state for all
-has "every account has its own block" '^  wl +NOT ACTIVE' "$T/out"
-has "each block says how to use it" 'aws --profile wl' "$T/out"
+has "every account has its own block" '^  alpha +NOT ACTIVE' "$T/out"
+has "each block says how to use it" 'aws --profile alpha' "$T/out"
 printf '[stray]\naws_access_key_id = AKIA000000000004\naws_secret_access_key = x\n' >> "$AWS_SHARED_CREDENTIALS_FILE"
 t "status with a stray key" 0 awsv status
 has "warns about it" 'WARNING' "$T/out"
@@ -259,11 +259,11 @@ t "unlock: an unknown name" 1 awsv unlock nosuch
 has "is read as a duration, and says names work too" 'bad duration .*account name' "$T/out"
 
 # --------------------------------------------------------------------- rm
-t "rm wl" 0 awsv rm wl --yes
-yes_ [ ! -e "$V/keys/wl.gpg" ]
-hasnt "profile gone" '^\[profile wl\]' "$AWS_CONFIG_FILE"
-has "nexum still default" 'creds nexum$' "$AWS_CONFIG_FILE"
-t "rm nexum" 0 awsv rm nexum --yes
+t "rm alpha" 0 awsv rm alpha --yes
+yes_ [ ! -e "$V/keys/alpha.gpg" ]
+hasnt "profile gone" '^\[profile alpha\]' "$AWS_CONFIG_FILE"
+has "beta still default" 'creds beta$' "$AWS_CONFIG_FILE"
+t "rm beta" 0 awsv rm beta --yes
 has "no default now" 'no active account' "$AWS_CONFIG_FILE"
 t "rm needs a terminal or --yes" 1 awsv rm other < /dev/null
 
@@ -392,8 +392,8 @@ case " $(comp awsv exec "$n1" -- aw) " in
     *" awsv "*) pass=$((pass + 1)) ;;
     *) fail=$((fail + 1)); echo "FAIL exec after --: a command name is not offered" ;;
 esac
-printf '[client]\naws_access_key_id = AKIA000000000009\n\n#[nexum]\n# x\n[odd] # c\n' > "$T/c.ini"
-same "import offers sections, commented ones too" "client nexum odd" \
+printf '[client]\naws_access_key_id = AKIA000000000009\n\n#[beta]\n# x\n[odd] # c\n' > "$T/c.ini"
+same "import offers sections, commented ones too" "beta client odd" \
     "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import '')"
 same "no key line reaches the reply" "" \
     "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import AKIA)"
