@@ -205,8 +205,8 @@ awsv-sso входит в AWS IAM Identity Center (SSO) и выходит из н
 входа.
 
 ```bash
-awsv-sso login sso --start-url https://example.awsapps.com/start \
-    --account 111122223333 --role ReadOnly --region us-east-1   # в первый раз
+awsv-sso login sso --start-url https://example.awsapps.com/start --region us-east-1
+                                    # в первый раз: потом выбрать аккаунт и роль
 awsv-sso login sso                  # в следующие разы: настройки уже в ~/.aws/config
 awsv-sso status                     # все SSO-профили и жив ли вход каждого
 awsv-sso logout                     # завершить все входы SSO в AWS CLI

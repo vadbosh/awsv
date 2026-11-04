@@ -22,7 +22,19 @@ cat > "$T/bin/aws" <<EOF
 printf 'BROWSER=%s %s\n' "\${BROWSER:-}" "\$*" >> "$T/aws.log"
 case "\$1 \${2:-}" in
     "--version ") echo "aws-cli/2.99.0 Python/3 Linux" ;;
-    "sso login")  exit "\${FAKE_LOGIN_RC:-0}" ;;
+    "sso login")
+        case "\$*" in *--sso-session*)   # the AWS CLI caches the token of the session
+            mkdir -p "\$HOME/.aws/sso/cache"
+            printf '{"startUrl": "%s", "region": "us-east-1", "accessToken": "tok-123", "expiresAt": "2099-01-01T00:00:00Z"}' \
+                "\${FAKE_URL:-https://example.awsapps.com/start}" > "\$HOME/.aws/sso/cache/0123.json" ;;
+        esac
+        exit "\${FAKE_LOGIN_RC:-0}" ;;
+    "sso list-accounts"|"sso list-account-roles")
+        f=""; for a in "\$@"; do case "\$a" in file://*) f="\${a#file://}" ;; esac; done
+        grep -q '"accessToken":"tok-123"' "\$f" || { echo "bad token input" >&2; exit 254; }
+        cp "\$f" "$T/last-input.json"
+        if [ "\$2" = list-accounts ]; then printf '%b' "\${FAKE_ACCOUNTS-111122223333\\tProd\\n444455556666\\tStage\\n}"
+        else printf '%b' "\${FAKE_ROLES-ReadOnly\\nAdmin\\n}"; fi ;;
     "sso logout") echo "Successfully signed out of all SSO profiles." ;;
     "sts get-caller-identity")
         all="\$*" p=""; while (( \$# )); do [ "\$1" = --profile ] && p="\$2"; shift; done
@@ -81,7 +93,7 @@ t "no command shows help" 0 awsv-sso
 has "help names login" 'login NAME \[OPTIONS\]' "$T/out"
 has "help says logout ends every session" 'cannot log out of one profile' "$T/out"
 for s in USAGE 'START HERE' COMMANDS 'LOG OUT' FILES ENVIRONMENT 'EXIT STATUS'; do
-    has "help has $s" "^$s\$" "$T/out"
+    has "help has $s" "^$s( |\$)" "$T/out"
 done
 t "--help" 0 awsv-sso --help
 has "--help is the same page" '^COMMANDS$' "$T/out"
@@ -109,7 +121,7 @@ t "a vault account is refused" 1 awsv-sso login alpha --start-url "$URL" --accou
 has "it says why" 'vault account of awsv' "$T/out"
 t "unknown option" 1 awsv-sso login work --frob
 t "first login needs the settings" 1 awsv-sso login work
-has "it names what is missing" 'needs --start-url --account --role --region' "$T/out"
+has "it names what is missing" 'needs --start-url --region' "$T/out"
 t "http start URL refused" 1 awsv-sso login work --start-url http://x --account 111122223333 --role R --region us-east-1
 t "short account refused" 1 awsv-sso login work --start-url "$URL" --account 1234 --role R --region us-east-1
 t "bad region refused" 1 awsv-sso login work --start-url "$URL" --account 111122223333 --role R --region useast
@@ -156,6 +168,39 @@ touch "$T/live/work-admin"
 t "shared session" 0 awsv-sso login work-admin --session work --account 111122223333 --role Admin
 has "linked to the session" '^sso_session = work$' "$C"
 count "still one session section" '^\[sso-session work\]$' "$C" 1
+
+# ------------------------------------------------------------- pick the account and the role
+export TMPDIR="$T/tmp"; mkdir -p "$TMPDIR"
+touch "$T/live/pick1" "$T/live/pick2" "$T/live/pick3"
+: > "$T/aws.log"
+printf '2\n1\n' > "$T/answers"
+t "login with only the portal address" 0 env AWSV_SSO_NO_TTY=1 awsv-sso login pick1 --start-url "$URL" --region us-east-1 < "$T/answers"
+has "the session logs in, not the profile" '^BROWSER=echo sso login --sso-session pick1 --use-device-code$' "$T/aws.log"
+has "accounts are listed" 'Pick the account' "$T/out"
+has "the second account is picked" '^sso_account_id = 444455556666$' "$C"
+has "the first role is picked" '^sso_role_name = ReadOnly$' "$C"
+has "roles asked for the picked account" '"accountId":"444455556666"' "$T/last-input.json"
+hasnt "the token is not on any command line" 'tok-123' "$T/aws.log"
+hasnt "the token is not printed" 'tok-123' "$T/out"
+[ -z "$(ls -A "$TMPDIR")" ] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "FAIL a temporary file is left: $(ls -A "$TMPDIR")"; }
+has "identity after the pick" 'Permission set +ReadOnly' "$T/out"
+
+t "one account and one role: no questions" 0 env AWSV_SSO_NO_TTY=1 FAKE_ACCOUNTS='111122223333\tProd\n' FAKE_ROLES='Admin\n' \
+    awsv-sso login pick2 --start-url "$URL" --region us-east-1 < /dev/null
+has "the only account taken" 'account: 111122223333  Prod' "$T/out"
+hasnt "no question asked" 'Pick the' "$T/out"
+
+t "--account given: only the role is picked" 0 env AWSV_SSO_NO_TTY=1 awsv-sso login pick3 --start-url "$URL" --region us-east-1 --account 111122223333 < <(printf '2\n')
+hasnt "accounts not listed then" 'Pick the account' "$T/out"
+has "the second role picked" 'Admin' "$T/out"
+
+t "no answer: refused" 1 env AWSV_SSO_NO_TTY=1 awsv-sso login pick4 --start-url "$URL" --region us-east-1 < /dev/null
+has "it names the option" 'no account picked — give it with --account VALUE' "$T/out"
+hasnt "no profile without an account" '^\[profile pick4\]$' "$C"
+t "an answer out of range: refused" 1 env AWSV_SSO_NO_TTY=1 awsv-sso login pick4 --start-url "$URL" --region us-east-1 < <(printf '9\n')
+t "the portal lists nothing" 1 env AWSV_SSO_NO_TTY=1 FAKE_ACCOUNTS='' awsv-sso login pick4 --start-url "$URL" --region us-east-1 < /dev/null
+has "it says so" 'lists no account' "$T/out"
+unset TMPDIR
 
 # ------------------------------------------------------------- failures
 t "login fails" 1 env FAKE_LOGIN_RC=1 awsv-sso login work
@@ -211,7 +256,7 @@ tab() {   # words... → the offers, one per line; the last word is being comple
 }
 AWS_CONFIG_FILE="$T/block.orig"; printf '\n[profile other2]\n[sso-session corp]\n' >> "$T/block.orig"
 tab ""
-want="$(awsv-sso --help | awk '/^COMMANDS$/ {f=1; next} f && NF==0 {exit} f {print $1}' | tr '\n' ' ')"
+want="$(awsv-sso --help | awk '/^COMMANDS$/ {f=1; next} f && NF==0 {exit} f {print $2}' | tr '\n' ' ')"
 [ "$(grep -v -- '^--' "$T/tab" | tr '\n' ' ')" = "$want" ] && pass=$((pass + 1)) \
     || { fail=$((fail + 1)); echo "FAIL Tab commands differ from help: $(tr '\n' ' ' < "$T/tab") vs $want"; }
 tab login ""

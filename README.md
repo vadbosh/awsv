@@ -206,8 +206,8 @@ awsv-sso logs in to AWS IAM Identity Center (SSO) and logs out. It stores no
 keys: the AWS CLI keeps the login in `~/.aws/sso/cache` until it expires.
 
 ```bash
-awsv-sso login sso --start-url https://example.awsapps.com/start \
-    --account 111122223333 --role ReadOnly --region us-east-1   # the first time
+awsv-sso login sso --start-url https://example.awsapps.com/start --region us-east-1
+                                    # the first time: then pick the account and the role
 awsv-sso login sso                  # every next time: the settings are in ~/.aws/config
 awsv-sso status                     # each SSO profile and whether its login is live
 awsv-sso logout                     # end every SSO login of the AWS CLI

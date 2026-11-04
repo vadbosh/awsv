@@ -152,6 +152,113 @@ awsv_default() {
 
 is_sso_profile() { [[ -n "$(ini_get "profile $1" sso_session)$(ini_get "profile $1" sso_start_url)" ]]; }
 
+# ------------------------------------------------------------ login steps
+
+readonly SSO_CACHE="$HOME/.aws/sso/cache"
+TMPD=""
+cleanup() { [[ -z "$TMPD" ]] || { rm -f -- "$TMPD"/input.json; rmdir -- "$TMPD"; } 2>/dev/null; }
+trap cleanup EXIT
+
+# Set KEY = VALUE where it differs. Each argument is "HEADER|KEY|VALUE". The
+# first change makes a copy of the config; the caller declares backed and changed.
+write_keys() {
+    local w h k v
+    for w in "$@"; do
+        IFS='|' read -r h k v <<< "$w"
+        [[ "$(ini_get "$h" "$k")" == "$v" ]] && continue
+        ((backed)) || { backup_config; backed=1; }
+        ini_set "$h" "$k" "$v"
+        changed=1
+    done
+}
+
+write_profile() {   # name session account role region
+    changed=0
+    write_keys "profile $1|sso_session|$2" "profile $1|sso_account_id|$3" \
+               "profile $1|sso_role_name|$4" "profile $1|region|$5"
+    if ((changed)); then
+        say "${G}[profile $1]${N} of $(tilde "$CONFIG"): account $3, role $4, region $5"
+    fi
+}
+
+# The device code needs no browser on this machine: open the URL anywhere and
+# type the code. BROWSER=echo stops the CLI from starting a text-mode browser,
+# which takes over the terminal and never finishes the login.
+sso_login() {   # --profile NAME | --sso-session S
+    if ((browser)); then
+        aws sso login "$@" || die "aws sso login failed"
+    else
+        env BROWSER=echo aws sso login "$@" --use-device-code || die "aws sso login failed"
+    fi
+}
+
+json_str() {   # file key: a string value of a one-line JSON file
+    sed -nE "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/p" "$1" | head -n1
+}
+
+# The access token the AWS CLI cached for START_URL: the newest file of
+# ~/.aws/sso/cache with that startUrl and an accessToken. It goes only into
+# the caller's variable, never to the terminal.
+sso_token() {
+    local f best=""
+    for f in "$SSO_CACHE"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(json_str "$f" startUrl)" == "$1" ]] || continue
+        [[ -n "$(json_str "$f" accessToken)" ]] || continue
+        if [[ -z "$best" || "$f" -nt "$best" ]]; then best="$f"; fi
+    done
+    [[ -n "$best" ]] || return 1
+    json_str "$best" accessToken
+}
+
+# One call of the SSO portal API. The token goes into a file only this user
+# can read, not onto the command line, where any user of the machine sees it.
+# --no-sign-request: the call needs the token, not the keys of [default].
+sso_list() {   # token sso-region operation account-id query
+    local f="$TMPD/input.json" rc=0
+    if [[ -n "$4" ]]; then
+        printf '{"accessToken":"%s","accountId":"%s"}' "$1" "$4" > "$f"
+    else
+        printf '{"accessToken":"%s"}' "$1" > "$f"
+    fi
+    aws sso "$3" --no-sign-request --region "$2" --cli-input-json "file://$f" \
+        --query "$5" --output text || rc=$?
+    rm -f -- "$f"
+    return "$rc"
+}
+
+# Choose one line of stdin, "value<TAB>label". One line is taken as it is.
+# Several are numbered, and the number is read from the terminal; with
+# AWSV_SSO_NO_TTY set, from the stdin of awsv-sso (fd 3), as the tests do.
+pick() {   # what option
+    local -a vals=() labels=()
+    local v l n=""
+    while IFS=$'\t' read -r v l; do
+        [[ -n "$v" ]] || continue
+        vals+=("$v"); labels+=("$l")
+    done
+    if ((${#vals[@]} == 0)); then
+        warn "the portal lists no $1 for this login"; return 0
+    fi
+    if ((${#vals[@]} == 1)); then
+        printf '%s %s%s%s\n' "$1:" "$G" "${vals[0]}${labels[0]:+  ${labels[0]}}" "$N" >&2
+        printf '%s\n' "${vals[0]}"; return 0
+    fi
+    printf '\n%sPick the %s:%s\n' "$B" "$1" "$N" >&2
+    for n in "${!vals[@]}"; do
+        printf '  %s%2d%s  %s%s\n' "$Y$B" "$((n + 1))" "$N" "${vals[n]}" "${labels[n]:+  ${labels[n]}}" >&2
+    done
+    printf 'number: ' >&2
+    # <&3, not < /dev/fd/3: reopening a file by its fd path starts it over
+    if [[ -n "${AWSV_SSO_NO_TTY:-}" ]]; then read -r n <&3 || true
+    else read -r n < /dev/tty 2>/dev/null || true; fi
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || ((n < 1 || n > ${#vals[@]})); then
+        printf '\n%sawsv-sso: no %s picked — give it with %s VALUE%s\n' "$R$B" "$1" "$2" "$N" >&2
+        return 0
+    fi
+    printf '%s\n' "${vals[n - 1]}"
+}
+
 # ------------------------------------------------------------ commands
 
 # The permission set is the middle of the role name AWS gives an SSO login:
@@ -191,7 +298,7 @@ cmd_login() {
     is_sso_profile "$name" && known=1
     if [[ "$known" == 0 ]] && sections profile | grep -qxF -- "$name"; then
         [[ -n "$url" ]] || die "[profile $name] exists and is not an SSO profile.
-         Give --start-url, --account, --role and --region to turn it into one, or pick another name."
+         Give --start-url and --region to turn it into one, or pick another name."
     fi
 
     # What the profile has now fills whatever the flags leave out.
@@ -207,44 +314,45 @@ cmd_login() {
     [[ -n "$sso_region" ]] || sso_region="$region"
 
     local miss=()
-    [[ -n "$url" ]]     || miss+=(--start-url)
-    [[ -n "$account" ]] || miss+=(--account)
-    [[ -n "$role" ]]    || miss+=(--role)
-    [[ -n "$region" ]]  || miss+=(--region)
+    [[ -n "$url" ]]    || miss+=(--start-url)
+    [[ -n "$region" ]] || miss+=(--region)
     ((${#miss[@]} == 0)) || die "login: the first login of '$name' needs ${miss[*]}
-         e.g. awsv-sso login $name --start-url https://example.awsapps.com/start \\
-                --account 111122223333 --role ReadOnly --region us-east-1"
+         e.g. awsv-sso login $name --start-url https://example.awsapps.com/start --region us-east-1"
     valid_url "$url"; valid_region "$sso_region"; valid_region "$region"
-    valid_acct "$account"; valid_role "$role"
+    [[ -z "$account" ]] || valid_acct "$account"
+    [[ -z "$role" ]]    || valid_role "$role"
 
-    # Write only what differs, so a plain repeat login leaves the file alone.
-    local -a want=(
-        "sso-session $session|sso_start_url|$url"
-        "sso-session $session|sso_region|$sso_region"
-        "sso-session $session|sso_registration_scopes|sso:account:access"
-        "profile $name|sso_session|$session"
-        "profile $name|sso_account_id|$account"
-        "profile $name|sso_role_name|$role"
-        "profile $name|region|$region"
-    )
-    local w h k v backed=0
-    for w in "${want[@]}"; do
-        IFS='|' read -r h k v <<< "$w"
-        [[ "$(ini_get "$h" "$k")" == "$v" ]] && continue
-        ((backed)) || { backup_config; backed=1; }
-        ini_set "$h" "$k" "$v"
-    done
-    if ((backed)); then
-        say "${G}[profile $name]${N} of $(tilde "$CONFIG"): account $account, role $role, region $region"
-    fi
+    # The session first. With no account or role yet, the login goes through
+    # the session, and the portal then lists the accounts and roles of this user.
+    local backed=0 changed=0
+    write_keys "sso-session $session|sso_start_url|$url" \
+               "sso-session $session|sso_region|$sso_region" \
+               "sso-session $session|sso_registration_scopes|sso:account:access"
 
-    # The device code needs no browser on this machine: open the URL anywhere
-    # and type the code. BROWSER=echo stops the CLI from starting a text-mode
-    # browser, which takes over the terminal and never finishes the login.
-    if ((browser)); then
-        aws sso login --profile "$name" || die "aws sso login failed"
+    if [[ -z "$account" || -z "$role" ]]; then
+        sso_login --sso-session "$session"
+        local tok
+        tok="$(sso_token "$url")" \
+            || die "logged in, but the AWS CLI left no token for $url in $(tilde "$SSO_CACHE")"
+        exec 3<&0   # the reader's stdin; pick reads the number from it when there is no terminal
+        TMPD="$(mktemp -d)"   # here, not in sso_list: that runs in a subshell, and the EXIT trap is this shell's
+        if [[ -z "$account" ]]; then
+            account="$(sso_list "$tok" "$sso_region" list-accounts '' \
+                'accountList[].[accountId,accountName]' | pick account --account)" || true
+            [[ -n "$account" ]] || exit 1
+            valid_acct "$account"
+        fi
+        if [[ -z "$role" ]]; then
+            role="$(sso_list "$tok" "$sso_region" list-account-roles "$account" \
+                'roleList[].[roleName]' | pick role --role)" || true
+            [[ -n "$role" ]] || exit 1
+            valid_role "$role"
+        fi
+        tok=""
+        write_profile "$name" "$session" "$account" "$role" "$region"
     else
-        env BROWSER=echo aws sso login --profile "$name" --use-device-code || die "aws sso login failed"
+        write_profile "$name" "$session" "$account" "$role" "$region"
+        sso_login --profile "$name"
     fi
 
     local out acct arn
@@ -318,17 +426,25 @@ ${B}USAGE${N}
   Words in capitals are yours to fill in: NAME is a profile name such as work,
   ID is a 12-digit account number, ROLE is a permission set, REGION is an AWS region.
 
-${B}START HERE${N}
-    awsv-sso login work --start-url https://example.awsapps.com/start \\
-        --account 111122223333 --role ReadOnly --region us-east-1   # the first time
-    awsv-sso login work                 # every next time: the settings are in ~/.aws/config
-    awsv use work                       # optional: plain aws and Terraform use this login
+${B}START HERE${N}  connect in this order
+  ${Y}${B}1${N}  the first login: the portal address and a region
+       ${G}awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1${N}
+       ${D}# prints a URL and a code: open the URL on any computer, type the code;
+       # then pick the account and the role from the lists the portal gives${N}
+  ${Y}${B}2${N}  check: who you are now
+       ${G}aws --profile work sts get-caller-identity${N}
+  ${Y}${B}3${N}  optional: plain aws and Terraform use this login
+       ${G}awsv use work${N}
+  ${Y}${B}4${N}  the login expired, next day: log in again, no options
+       ${G}awsv-sso login work${N}
+  ${Y}${B}5${N}  done: end every SSO login
+       ${G}awsv-sso logout${N}
 
 ${B}COMMANDS${N}
-    ${G}login${N} NAME [OPTIONS]            # write the profile, log in with a device code
-    ${G}status${N}                          # each SSO profile and whether its login is live
-    ${G}logout${N}                          # end every SSO login of the AWS CLI
-    ${G}help${N} [COMMAND]                  # this page, or one command
+    ${G}awsv-sso login NAME [OPTIONS]${N}   # write the profile, log in with a device code
+    ${G}awsv-sso status${N}                 # each SSO profile and whether its login is live
+    ${G}awsv-sso logout${N}                 # end every SSO login of the AWS CLI
+    ${G}awsv-sso help [COMMAND]${N}         # this page, or one command
 
 ${B}LOG OUT${N}
   The AWS CLI cannot log out of one profile: aws sso logout ends every SSO login
@@ -356,18 +472,21 @@ EOF
 help_login() {
     cat <<EOF
 ${B}login${N} — write the profile and log in
-    awsv-sso login NAME [--start-url URL] [--account ID] [--role ROLE] [--region REGION]
+    ${G}awsv-sso login NAME${N} [--start-url URL] [--region REGION] [--account ID] [--role ROLE]
                         [--sso-region REGION] [--session S] [--browser]
 
-  The first login of NAME needs --start-url, --account, --role and --region. They
-  go to [sso-session NAME] and [profile NAME] of ~/.aws/config, so later logins
-  need only the name. A flag given later changes that one setting.
+  NAME is yours to choose: the profile in ~/.aws/config, for awsv use NAME and
+  aws --profile NAME. The first login of NAME needs --start-url and --region.
+  Without --account or --role, login asks the portal which accounts and roles
+  you have and lets you pick; one choice is taken without asking. Everything
+  goes to [sso-session NAME] and [profile NAME], so later logins need only NAME.
+  A flag given later changes that one setting.
 
 ${B}OPTIONS${N}
   --start-url URL       the address of the AWS access portal, https://….awsapps.com/start
-  --account ID          the 12-digit account the role is in
-  --role ROLE           the permission set, as the portal names it
   --region REGION       the region of the profile; also the SSO region, unless set
+  --account ID          the 12-digit account; without it, pick from the portal list
+  --role ROLE           the permission set; without it, pick from the portal list
   --sso-region REGION   the region of IAM Identity Center, when it differs
   --session S           the name of the [sso-session] section; default NAME.
                         Profiles with one session share one login.
@@ -375,12 +494,14 @@ ${B}OPTIONS${N}
   -h, --help            this page
 
 ${B}EXAMPLES${N}
-    awsv-sso login work --start-url https://example.awsapps.com/start \\
-        --account 111122223333 --role ReadOnly --region us-east-1
-    awsv-sso login work                 # the login expired: log in again
-    awsv-sso login work --role Admin    # the same account, another permission set
-    awsv-sso login work-admin --session work --account 111122223333 --role Admin
-                                        # a second profile on the login of work
+    ${G}awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1${N}
+                                        ${D}# then pick the account and the role${N}
+    ${G}awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1 \\
+        --account 111122223333 --role ReadOnly${N}   ${D}# no questions, for a script${N}
+    ${G}awsv-sso login work${N}                 ${D}# the login expired: log in again${N}
+    ${G}awsv-sso login work --role Admin${N}    ${D}# the same account, another permission set${N}
+    ${G}awsv-sso login work-admin --session work --role Admin${N}
+                                        ${D}# a second profile on the login of work${N}
 
   The device code: login prints a URL and a code. Open the URL in a browser on
   any computer and type the code. This machine needs no browser.
@@ -389,7 +510,7 @@ ${B}REFUSED${N}
   default                       [default] belongs to awsv; pick a name, then awsv use NAME
   a name of the awsv block      that is an account of the vault
   [NAME] in ~/.aws/credentials  with keys there, they win over the SSO login; remove that section
-  [profile NAME] without SSO    give --start-url, --account, --role and --region to convert it
+  [profile NAME] without SSO    give --start-url and --region to convert it
 EOF
 }
 

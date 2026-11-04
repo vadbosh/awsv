@@ -10,32 +10,50 @@ for bash. It needs AWS CLI v2. `awsv-sso --help` shows every command,
 
 ## The first login
 
-Take four settings from the AWS access portal of your organization:
-
-| Setting | Where to find it | Option |
-|---|---|---|
-| start URL | the address of the portal, `https://….awsapps.com/start` | `--start-url` |
-| account | the 12-digit number under the account name | `--account` |
-| role | the permission set under the account, such as `ReadOnly` | `--role` |
-| region | the region your resources are in | `--region` |
-
-`--region` is also taken as the region of IAM Identity Center. When Identity
-Center is in another region, add `--sso-region` with that region.
+The first login needs two settings: the address of your AWS access portal,
+`https://….awsapps.com/start`, and a region. `work` is the name of the new
+profile; choose any name.
 
 ```bash
-awsv-sso login work --start-url https://example.awsapps.com/start \
-    --account 111122223333 --role ReadOnly --region us-east-1
+awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1
 ```
 
-awsv-sso prints a URL and a code. Open the URL in a browser on any computer,
-type the code and approve. The machine you run awsv-sso on needs no browser.
-Then awsv-sso shows who you are:
+1. awsv-sso prints a URL and a code. Open the URL in a browser on any computer,
+   type the code and approve. The machine you run awsv-sso on needs no browser.
+2. awsv-sso asks the portal which accounts and roles you have and prints them
+   as numbered lists. Type the number of the account, then of the role. When
+   there is only one, awsv-sso takes it without asking.
+
+```
+Pick the account:
+   1  111122223333  Prod
+   2  444455556666  Stage
+number: 1
+
+Pick the role:
+   1  ReadOnly
+   2  Admin
+number: 1
+```
+
+3. awsv-sso shows who you are:
 
 ```
   Identity        arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_ReadOnly_…/you@example.com
   Account         111122223333
   Permission set  ReadOnly
 ```
+
+A script cannot answer the questions: give it `--account` and `--role`. Then
+awsv-sso asks nothing:
+
+```bash
+awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1 \
+    --account 111122223333 --role ReadOnly
+```
+
+`--region` is also taken as the region of IAM Identity Center. When Identity
+Center is in another region, add `--sso-region` with that region.
 
 These lines appear in `~/.aws/config`. The rest of the file stays as it was:
 
@@ -53,8 +71,7 @@ region = us-east-1
 ```
 
 A profile written by hand, or by `aws configure sso`, works the same way.
-awsv-sso takes from it every setting it already has. A profile with all four
-needs no options; a profile without the role needs only `--role`.
+awsv-sso takes from it every setting it already has and asks only for the rest.
 
 ## Every next login
 
@@ -71,8 +88,8 @@ with an error about an expired token, and the same command logs in again.
 | Option | What it does | Example |
 |---|---|---|
 | `--start-url URL` | the portal address; needed at the first login | `--start-url https://example.awsapps.com/start` |
-| `--account ID` | the account; needed at the first login | `--account 111122223333` |
-| `--role ROLE` | the permission set; given later, it replaces the old one | `--role Admin` |
+| `--account ID` | the account; without it, pick from the list of the portal | `--account 111122223333` |
+| `--role ROLE` | the permission set; without it, pick from the list; given later, it replaces the old one | `--role Admin` |
 | `--region REGION` | the region of the profile, and of SSO unless `--sso-region` is given | `--region eu-central-1` |
 | `--sso-region REGION` | the region of IAM Identity Center, when it differs | `--sso-region us-east-1` |
 | `--session S` | the name of the `[sso-session]` section; default is the profile name | `--session work` |
@@ -158,10 +175,11 @@ files, `XDG_STATE_HOME` moves the copies, and `NO_COLOR` turns colour off.
 
 | Message | Why | What to do |
 |---|---|---|
-| `the first login of 'work' needs --start-url --account --role --region` | the profile has no SSO settings yet | give the options it lists |
+| `the first login of 'work' needs --start-url --region` | the profile has no SSO settings yet | give the options it lists |
+| `no account picked — give it with --account VALUE` | no number was typed, or there is no terminal | type a number from the list, or give `--account` |
 | `'work' is a vault account of awsv` | the awsv block has this name | pick another name |
 | `[work] of ~/.aws/credentials holds keys` | those keys would win over the SSO login | remove that section, or move the keys into the vault under another name: `awsv import SECTION --as NAME` |
-| `[profile work] exists and is not an SSO profile` | the profile gets its keys another way | give the four options to convert it, or pick another name |
+| `[profile work] exists and is not an SSO profile` | the profile gets its keys another way | give `--start-url` and `--region` to convert it, or pick another name |
 | `logged in, but STS refused the keys` | the role is not in that account | check `--account` and `--role` in the portal |
 | `AWS CLI v2 is needed` | `aws --version` is v1 | install AWS CLI v2 |
 

@@ -10,32 +10,51 @@ awsv-sso входит в AWS IAM Identity Center (SSO) и выходит из н
 
 ## Первый вход
 
-Четыре настройки нужно взять из AWS access portal организации:
-
-| Настройка | Где взять | Параметр |
-|---|---|---|
-| start URL | адрес портала, `https://….awsapps.com/start` | `--start-url` |
-| аккаунт | 12 цифр под названием аккаунта | `--account` |
-| роль | permission set под аккаунтом, например `ReadOnly` | `--role` |
-| регион | регион, в котором лежат ресурсы | `--region` |
-
-`--region` становится и регионом IAM Identity Center. Если Identity Center
-работает в другом регионе, добавьте `--sso-region` с этим регионом.
+Первому входу нужны две настройки: адрес AWS access portal организации,
+`https://….awsapps.com/start`, и регион. `work` — имя нового профиля, его
+выбираете вы.
 
 ```bash
-awsv-sso login work --start-url https://example.awsapps.com/start \
-    --account 111122223333 --role ReadOnly --region us-east-1
+awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1
 ```
 
-awsv-sso печатает адрес и код. Откройте адрес в браузере на любом компьютере,
-введите код и подтвердите. На машине, где запущен awsv-sso, браузер не нужен.
-Потом awsv-sso покажет, от чьего имени вы вошли:
+1. awsv-sso печатает адрес и код. Откройте адрес в браузере на любом
+   компьютере, введите код и подтвердите. На машине, где запущен awsv-sso,
+   браузер не нужен.
+2. awsv-sso спрашивает у портала, какие аккаунты и роли вам доступны, и
+   печатает их нумерованными списками. Введите номер аккаунта, потом номер
+   роли. Если выбирать не из чего, awsv-sso берёт единственный вариант сам.
+
+```
+Pick the account:
+   1  111122223333  Prod
+   2  444455556666  Stage
+number: 1
+
+Pick the role:
+   1  ReadOnly
+   2  Admin
+number: 1
+```
+
+3. awsv-sso показывает, от чьего имени вы вошли:
 
 ```
   Identity        arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_ReadOnly_…/you@example.com
   Account         111122223333
   Permission set  ReadOnly
 ```
+
+Скрипт на вопросы не ответит, поэтому ему нужны `--account` и `--role`. Тогда
+awsv-sso ничего не спрашивает:
+
+```bash
+awsv-sso login work --start-url https://example.awsapps.com/start --region us-east-1 \
+    --account 111122223333 --role ReadOnly
+```
+
+`--region` становится и регионом IAM Identity Center. Если Identity Center
+работает в другом регионе, добавьте `--sso-region` с этим регионом.
 
 В `~/.aws/config` появятся такие строки, остальное в файле не меняется:
 
@@ -52,9 +71,9 @@ sso_role_name = ReadOnly
 region = us-east-1
 ```
 
-Профиль, написанный вручную или командой `aws configure sso`, работает так же.
-awsv-sso берёт из него все настройки, которые там уже есть. Профилю со всеми
-четырьмя параметры не нужны, а профилю без роли нужен только `--role`.
+Профиль, написанный вручную или командой `aws configure sso`, работает так же:
+awsv-sso берёт из него все настройки, которые там уже есть, и спрашивает только
+недостающие.
 
 ## Следующие входы
 
@@ -71,8 +90,8 @@ awsv-sso login work
 | Параметр | Что делает | Пример |
 |---|---|---|
 | `--start-url URL` | адрес портала; нужен при первом входе | `--start-url https://example.awsapps.com/start` |
-| `--account ID` | аккаунт; нужен при первом входе | `--account 111122223333` |
-| `--role ROLE` | permission set; если указать позже, заменит прежний | `--role Admin` |
+| `--account ID` | аккаунт; без него выбирается из списка портала | `--account 111122223333` |
+| `--role ROLE` | permission set; без него выбирается из списка; если указать позже, заменит прежний | `--role Admin` |
 | `--region REGION` | регион профиля; он же регион SSO, если не задан `--sso-region` | `--region eu-central-1` |
 | `--sso-region REGION` | регион IAM Identity Center, если он другой | `--sso-region us-east-1` |
 | `--session S` | имя секции `[sso-session]`; по умолчанию имя профиля | `--session work` |
@@ -159,10 +178,11 @@ AWS, `XDG_STATE_HOME` переносит копии, а `NO_COLOR` отключ�
 
 | Сообщение | Почему | Что делать |
 |---|---|---|
-| `the first login of 'work' needs --start-url --account --role --region` | у профиля ещё нет настроек SSO | указать перечисленные параметры |
+| `the first login of 'work' needs --start-url --region` | у профиля ещё нет настроек SSO | указать перечисленные параметры |
+| `no account picked — give it with --account VALUE` | номер не введён или нет терминала | ввести номер из списка или указать `--account` |
 | `'work' is a vault account of awsv` | это имя есть в блоке awsv | выбрать другое имя |
 | `[work] of ~/.aws/credentials holds keys` | эти ключи перекрыли бы вход через SSO | удалить эту секцию или перенести ключи в сейф под другим именем: `awsv import SECTION --as NAME` |
-| `[profile work] exists and is not an SSO profile` | профиль получает ключи по-другому | указать четыре параметра, чтобы превратить его в SSO-профиль, или выбрать другое имя |
+| `[profile work] exists and is not an SSO profile` | профиль получает ключи по-другому | указать `--start-url` и `--region`, чтобы превратить его в SSO-профиль, или выбрать другое имя |
 | `logged in, but STS refused the keys` | этой роли нет в этом аккаунте | сверить `--account` и `--role` с порталом |
 | `AWS CLI v2 is needed` | `aws --version` показывает v1 | поставить AWS CLI v2 |
 
