@@ -448,6 +448,9 @@ same "Tab offers the outside profiles to use" "$(echo "$names loop sso" | words)
 same "but not to show" "$names" "$(comp awsv show '')"
 t "a vault account again" 0 awsv use "$n1"
 yes_ [ "$(cat "$V/active")" = "$n1" ]
+t "ls after the way back" 0 awsv ls
+has "lists the outside profiles too, without *" '^sso +external +- +eu-west-3 ' "$T/out"
+hasnt "and none of them as [default]" '^(sso|loop) +\*' "$T/out"
 # --------------------------------------------------------------- install.sh
 P="$T/prefix"
 t "install --check" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh" --check

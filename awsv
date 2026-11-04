@@ -837,11 +837,14 @@ cmd_ls() {
             "$(meta_get "$n" mode)" "$(lock_of "$n")" "$(meta_get "$n" region)" \
             "$(meta_get "$n" account)" "$(meta_get "$n" arn)" "$N"
     done
-    if [ "${act#@}" != "$act" ]; then   # [default] is a profile outside the vault
-        printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$G$B" "${act#@}" '*' external - \
-            "$(external_region "${act#@}")" - "[profile ${act#@}] in $CONFIG" "$N"
+    # Profiles kept outside the vault, which awsv use can make the [default].
+    for n in $(external_profiles); do
+        exists "$n" && continue   # a vault account of that name wins, and is listed above
         any=1
-    fi
+        printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$([ "@$n" = "$act" ] && printf '%s' "$G$B")" \
+            "$n" "$([ "@$n" = "$act" ] && echo '*')" external - \
+            "$(external_region "$n")" - "[profile $n] in $CONFIG" "$N"
+    done
     [ "$any" = 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
 }
 
