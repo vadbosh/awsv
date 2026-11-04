@@ -35,6 +35,15 @@ _awsv_sections() {   # [name] and commented #[name]: import takes both
     sed -n 's/^[[:space:]]*#\{0,1\}[[:space:]]*\[\([^]]*\)\].*/\1/p' "$f" | sort -u
 }
 
+_awsv_profiles() {   # [profile NAME] outside the awsv block: use takes those too
+    local f="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+    [ -r "$f" ] || return 0
+    awk '/^# >>> awsv/ {skip = 1; next} /^# <<< awsv/ {skip = 0; next}
+         !skip && /^[[:space:]]*\[profile[[:space:]]+[^]]+\]/ {
+             s = $0; sub(/^[[:space:]]*\[profile[[:space:]]+/, "", s); sub(/\].*$/, "", s)
+             if (s != "default") print s }' "$f" | sort -u
+}
+
 _awsv_reply() {   # words — the ones that start with the current word
     mapfile -t COMPREPLY < <(compgen -W "$1" -- "$cur")
 }
@@ -109,7 +118,9 @@ _awsv() {
         exec)
             if [ "${#args[@]}" -eq 0 ]; then _awsv_reply "$(_awsv_names)"
             else _awsv_reply "--"; fi ;;
-        use|show|passwd|lock)
+        use)   # an account of the vault, or a profile kept outside it
+            [ "${#args[@]}" -eq 0 ] && _awsv_reply "$(_awsv_names) $(_awsv_profiles)" ;;
+        show|passwd|lock)
             [ "${#args[@]}" -eq 0 ] && _awsv_reply "$(_awsv_names)" ;;
         unlock)   # [NAME|all] [DURATION], in either order
             local target=0 dur=0 names words=""

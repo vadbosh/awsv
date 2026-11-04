@@ -65,6 +65,8 @@ printf 'AKIA000000000008\n0000000000\n' | awsv add solo --stdin --no-verify --mo
 kill_own_agents
 printf '[client]\naws_access_key_id = AKIA000000000009\naws_secret_access_key = 0000000000\n' \
     > "$AWS_SHARED_CREDENTIALS_FILE"
+# A profile outside the vault, for the commands that make one the [default].
+printf '\n[profile sso]\nregion = eu-west-3\n' >> "$AWS_CONFIG_FILE"
 tar -C "$HOME" -cf "$T/pristine.tar" .        # each command starts from this state
 
 # ---------------------------------------------------------------- collect

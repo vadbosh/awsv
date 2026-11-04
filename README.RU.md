@@ -103,7 +103,13 @@ awsv ls       # * — это [default]; дальше режим, замок, р�
 
 ```bash
 awsv use client      # теперь простой "aws ..." работает от client
+awsv use sso         # [default] — профиль вне сейфа, например вход через SSO
 ```
+
+`sso` здесь — любой `[profile NAME]`, который есть в `~/.aws/config` вне блока
+awsv. Ключи он получает своим способом, а awsv передаёт их простому `aws`,
+Terraform и SDK через `aws configure export-credentials`. Если в сейфе есть
+аккаунт с тем же именем, выбирается он.
 
 ### exec — одна команда от другого аккаунта
 

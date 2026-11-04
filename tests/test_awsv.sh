@@ -420,6 +420,34 @@ same "no key line reaches the reply" "" \
 same "import options after the section" "--as --keep --lock --mode --no-verify --region" \
     "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import client '')"
 same "no vault: no names, no error" "" "$(AWSV_HOME="$T/none" comp awsv use '')"
+
+# ----------------------------------- [default] from a profile outside the vault
+# An SSO profile, say. Here it gets a fake key from a script of its own, so no
+# network and no ~/.aws/credentials are involved.
+printf '#!/bin/sh\necho %s\n' "'{\"Version\":1,\"AccessKeyId\":\"AKIA000000000044\",\"SecretAccessKey\":\"x\"}'" > "$T/bin/fake-sso"
+chmod 755 "$T/bin/fake-sso"
+printf '\n[profile sso]\nregion = eu-west-3\ncredential_process = %s\n' "$T/bin/fake-sso" >> "$AWS_CONFIG_FILE"
+printf '\n[profile loop]\nregion = eu-west-3\ncredential_process = %s creds @loop\n' "$T/bin/awsv" >> "$AWS_CONFIG_FILE"
+t "use an outside profile" 0 awsv use sso
+yes_ [ "$(cat "$V/active")" = @sso ]
+has "[default] hands on to it" '^credential_process = .*/awsv creds @sso$' "$AWS_CONFIG_FILE"
+yes_ [ "$(awk '/^\[default\]/ {f = 1; next} /^\[/ {f = 0} f && /^region/' "$AWS_CONFIG_FILE")" = "region = eu-west-3" ]
+has "the profile itself is left as it was" "^credential_process = $T/bin/fake-sso\$" "$AWS_CONFIG_FILE"
+t "plain aws gets the profile's keys" 0 aws configure export-credentials
+has "through awsv" 'AKIA000000000044' "$T/out"
+t "ls marks it" 0 awsv ls
+has "as [default], external" '^sso +\* +external ' "$T/out"
+t "status shows it" 0 awsv status
+has "its own block" '^\* sso +\[default\] +EXTERNAL' "$T/out"
+has "and how it gets keys" 'aws configure export-credentials --profile sso' "$T/out"
+t "a name that is neither is refused" 1 awsv use nosuch
+has "says both" "no account 'nosuch' in the vault and no \[profile nosuch\]" "$T/out"
+t "a profile that leads back to awsv is refused (aws exits 253)" 253 awsv creds @loop
+has "and says why" 'leads back to awsv' "$T/out"
+same "Tab offers the outside profiles to use" "$(echo "$names loop sso" | words)" "$(comp awsv use '')"
+same "but not to show" "$names" "$(comp awsv show '')"
+t "a vault account again" 0 awsv use "$n1"
+yes_ [ "$(cat "$V/active")" = "$n1" ]
 # --------------------------------------------------------------- install.sh
 P="$T/prefix"
 t "install --check" 0 env PATH="$P:$PATH" PREFIX="$P" "$SRC/install.sh" --check

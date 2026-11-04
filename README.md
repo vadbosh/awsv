@@ -105,7 +105,13 @@ awsv ls       # * marks [default]; then mode, lock, region, account number
 
 ```bash
 awsv use client      # plain "aws ..." now runs as client
+awsv use sso         # [default] is a profile kept outside the vault, such as an SSO login
 ```
+
+`sso` here is any `[profile NAME]` that `~/.aws/config` has outside the awsv
+block. It keeps its own way of getting keys, and awsv hands them on to plain
+`aws`, Terraform and the SDKs through `aws configure export-credentials`. An
+account of the vault with the same name wins.
 
 ### exec — run one command as another account
 

@@ -155,7 +155,12 @@ FILES
 @ use | change the [default] account
     $ awsv use client                   # plain "aws ..." now works as client
     $ aws s3 ls                         # runs as client
+    $ awsv use sso                      # [default] is [profile sso] of ~/.aws/config, an SSO login say
   This replaces commenting sections in and out.
+  NAME is an account of the vault, or a [profile NAME] that ~/.aws/config has
+  outside the awsv block. Such a profile keeps its own way of getting keys; awsv
+  hands them on with aws configure export-credentials. Terraform and the SDKs
+  follow [default] the same way.
 
 @ exec | run one command as another account
     $ awsv exec client -- terraform plan  # [default] does not change
@@ -526,6 +531,24 @@ outside_block() {   # the config file without the awsv block
     awk -v b="$BEGIN" -v e="$END" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$CONFIG"
 }
 
+# A profile the user keeps outside the vault — an SSO profile, say — can be the
+# [default] too. The active file then holds "@NAME", so it is never mistaken for
+# an account of the vault, and [default] gets its keys from that profile through
+# aws configure export-credentials. Only [profile NAME] sections of the config
+# outside the awsv block qualify: a key in ~/.aws/credentials is what awsv moves
+# into the vault, not something to hand on.
+valid_profile() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "bad profile name '$1'"; }
+external_profiles() {   # [profile NAME] outside the awsv block, one per line
+    outside_block | sed -nE 's/^[[:space:]]*\[profile[[:space:]]+([^]]+)\].*/\1/p' \
+        | sed 's/[[:space:]]*$//' | grep -vx default | sort -u
+}
+is_external() { external_profiles | grep -qxF -- "$1"; }
+external_region() {   # the region line of [profile NAME] outside the block
+    outside_block | awk -v p="$1" '
+        /^[[:space:]]*\[/ { h = $0; gsub(/^[[:space:]]*\[profile[[:space:]]+|\][[:space:]]*$/, "", h); ins = (h == p); next }
+        ins && /^[[:space:]]*region[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit }'
+}
+
 conflicts() {   # names awsv generates that the rest of the file defines too
     local want=" default " f
     for f in "$KEYS"/*.gpg; do [ -e "$f" ] && want+="$(basename "$f" .gpg) "; done
@@ -541,6 +564,11 @@ render_block() {
     if [ -n "$act" ] && exists "$act"; then
         printf '[default]\nregion = %s\noutput = json\ncredential_process = %s creds %s\n\n' \
             "$(meta_get "$act" region)" "$BIN" "$act"
+    elif [ "${act#@}" != "$act" ] && is_external "${act#@}"; then
+        local reg; reg="$(external_region "${act#@}")"
+        printf '[default]\n'
+        [ -z "$reg" ] || printf 'region = %s\n' "$reg"
+        printf 'output = json\ncredential_process = %s creds %s\n\n' "$BIN" "$act"
     else
         printf '# no active account — run: awsv use NAME\n\n'
     fi
@@ -809,15 +837,29 @@ cmd_ls() {
             "$(meta_get "$n" mode)" "$(lock_of "$n")" "$(meta_get "$n" region)" \
             "$(meta_get "$n" account)" "$(meta_get "$n" arn)" "$N"
     done
+    if [ "${act#@}" != "$act" ]; then   # [default] is a profile outside the vault
+        printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$G$B" "${act#@}" '*' external - \
+            "$(external_region "${act#@}")" - "[profile ${act#@}] in $CONFIG" "$N"
+        any=1
+    fi
     [ "$any" = 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
 }
 
 cmd_use() {
     local name="${1:-}"; [ -n "$name" ] || die "usage: awsv use NAME"
-    need "$name"
-    printf '%s\n' "$name" > "$AWSV_HOME/active"
-    write_config
-    ok "[default] is $name now — $(meta_get "$name" arn)"
+    if exists "$name"; then
+        printf '%s\n' "$name" > "$AWSV_HOME/active"
+        write_config
+        ok "[default] is $name now — $(meta_get "$name" arn)"
+    elif is_external "$name"; then
+        valid_profile "$name"
+        printf '@%s\n' "$name" > "$AWSV_HOME/active"
+        write_config
+        ok "[default] is $name now — [profile $name] of $CONFIG, not an account of the vault"
+        say "  plain aws gets its keys as: aws configure export-credentials --profile $name"
+    else
+        die "no account '$name' in the vault and no [profile $name] in $CONFIG — see 'awsv ls'"
+    fi
 }
 
 # Delete the GPG home of an account that no longer has its own passphrase.
@@ -914,6 +956,14 @@ cmd_exec() {
 
 cmd_creds() {   # the credential_process entry point
     local name="${1:-}"; [ -n "$name" ] || die "usage: awsv creds NAME"
+    if [ "${name#@}" != "$name" ]; then   # @PROFILE: the [default] taken from outside the vault
+        name="${name#@}"; valid_profile "$name"
+        is_external "$name" || die "no [profile $name] in $CONFIG outside the awsv block — pick another [default]: awsv use NAME"
+        # A profile that hands its keys back to awsv would loop for ever.
+        [ -z "${AWSV_IN_CREDS:-}" ] || die "[profile $name] leads back to awsv; it has to get its keys some other way"
+        unset AWS_PROFILE AWS_DEFAULT_PROFILE
+        AWSV_IN_CREDS=1 exec aws configure export-credentials --profile "$name" --format process
+    fi
     need "$name"
     if [ "$(meta_get "$name" mode)" = direct ]; then
         decrypt_key "$name"
@@ -1125,6 +1175,20 @@ cmd_status() {
     say ""
     say "${B}ACCOUNTS${N}    $count   ${D}* marks [default]: the account that plain \"aws\" uses${N}"
     say "            ${D}LOCKED or UNLOCKED: the state of the passphrase that opens the account${N}"
+    if [ "${act#@}" != "$act" ]; then   # [default] is a profile outside the vault
+        n="${act#@}"
+        say ""
+        if is_external "$n"; then
+            say "${G}${B}* $n${N}  ${G}[default]${N}  ${BY}EXTERNAL${N}"
+            say "    source    [profile $n] in $CONFIG — outside the vault, awsv keeps no key for it"
+            say "    keys      aws configure export-credentials --profile $n   ${D}— an SSO profile needs aws sso login when its login expires${N}"
+            say "    region    $(external_region "$n")"
+        else
+            say "${R}${B}* $n${N}  ${R}[default]  MISSING${N}"
+            say "    source    no [profile $n] in $CONFIG any more — plain aws fails"
+        fi
+        say "    try       ${C}aws sts get-caller-identity${N}   ${D}— plain aws uses this profile; a vault account again: awsv use NAME${N}"
+    fi
     for n in "${list[@]}"; do
         mode="$(meta_get "$n" mode)"; acct="$(meta_get "$n" account)"; arn="$(meta_get "$n" arn)"
         h="$(home_of "$n")"
