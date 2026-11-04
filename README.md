@@ -15,19 +15,20 @@ core tools.
 ```bash
 git clone https://github.com/vadbosh/awsv.git
 cd awsv
-./install.sh            # checks what is needed, then installs the command into ~/.local/bin
+./install.sh            # checks what is needed, then installs both commands into ~/.local/bin
 ```
 
 | Installer option | What it does |
 |---|---|
 | `./install.sh --check` | checks the components, changes nothing |
 | `./install.sh --dry-run` | checks, then says what it would write |
-| `./install.sh --uninstall` | removes the command and its Tab completion; the vault stays |
+| `./install.sh --uninstall` | removes both commands and the Tab completion; the vault stays |
 | `./install.sh --uninstall --force` | the same while `~/.aws/config` still uses awsv |
 | `PREFIX=/opt/bin ./install.sh` | installs into another directory |
 
 The installer also adds Tab completion for bash: in a new terminal, Tab after
-awsv offers the commands, the account names and the option values.
+awsv offers the commands, the account names and the option values. Tab after
+awsv-sso offers its commands, the SSO profiles and the regions.
 
 ## Quick start
 
@@ -199,6 +200,24 @@ awsv status          # the vault, each account, what is open, keys left in ~/.aw
 | `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` | `~/.aws/config`, `~/.aws/credentials` | the AWS files awsv reads and writes |
 | `NO_COLOR` | not set | set it to turn colour off |
 
+## SSO logins: awsv-sso
+
+awsv-sso logs in to AWS IAM Identity Center (SSO) and logs out. It stores no
+keys: the AWS CLI keeps the login in `~/.aws/sso/cache` until it expires.
+
+```bash
+awsv-sso login sso --start-url https://example.awsapps.com/start \
+    --account 111122223333 --role ReadOnly --region us-east-1   # the first time
+awsv-sso login sso                  # every next time: the settings are in ~/.aws/config
+awsv-sso status                     # each SSO profile and whether its login is live
+awsv-sso logout                     # end every SSO login of the AWS CLI
+awsv use sso                        # optional: plain aws and Terraform use the login
+```
+
+The AWS CLI cannot log out of one profile, so `awsv-sso logout` ends every SSO
+login at once. Every option, the device code, two profiles on one login and the
+error messages: [docs/sso.md](docs/sso.md).
+
 ## Where secrets and data are
 
 [![Where awsv keeps secrets and data](docs/diagrams/storage.png)](docs/diagrams/storage.png)
@@ -211,9 +230,11 @@ awsv status          # the vault, each account, what is open, keys left in ~/.aw
 | `~/.local/share/awsv/meta/NAME` | region, mode, lock, account number | no |
 | `~/.local/share/awsv/active`, `lock`, `unlocked-until` | the `[default]` name, the lock for new accounts, the end of the unlock window | no |
 | `~/.gnupg/` | the GPG key of the shared passphrase; `gpg-agent.conf` | the key: yes, passphrase-protected |
-| `~/.aws/config` | profiles that call `awsv creds NAME`, between two marker lines | no |
+| `~/.aws/config` | profiles that call `awsv creds NAME`, between two marker lines; SSO profiles of awsv-sso outside them | no |
 | `~/.aws/credentials` | nothing: it stays empty | no |
 | `$XDG_RUNTIME_DIR/awsv/NAME` | a one-hour session, plain text, in memory | yes, until it expires |
+| `~/.aws/sso/cache/`, `~/.aws/cli/cache/` | the SSO login and its keys, kept by the AWS CLI; `awsv-sso logout` deletes them | yes, until they expire |
+| `~/.local/state/awsv-sso/` | the last ten copies of `~/.aws/config` before awsv-sso changed it | no |
 
 ## What the vault does not protect
 

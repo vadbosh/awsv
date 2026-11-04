@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+#
+# awsv-sso — log in to and out of AWS IAM Identity Center (SSO) profiles.
+#
+#   awsv-sso login NAME [options]   write [sso-session] and [profile NAME], then log in
+#   awsv-sso logout                 end every SSO session of the AWS CLI
+#   awsv-sso status                 every SSO profile and whether its login is live
+#
+# Settings come from the flags of the first login and are kept where the AWS
+# CLI reads them, in ~/.aws/config; nothing else is stored. The next login of
+# the same profile needs no flags. No keys are written anywhere: the AWS CLI
+# keeps its own token cache in ~/.aws/sso/cache.
+#
+# The awsv block of ~/.aws/config is never touched. To make a logged-in
+# profile the [default] of plain aws, run 'awsv use NAME' — a separate step.
+
+set -Eeuo pipefail
+umask 077
+
+readonly CONFIG="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+readonly CREDS="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
+readonly BACKUP="${XDG_STATE_HOME:-$HOME/.local/state}/awsv-sso"
+readonly BEGIN="# >>> awsv: generated, do not edit between these two lines >>>"
+readonly END="# <<< awsv <<<"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    B=$'\e[1m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' N=$'\e[0m'
+else
+    B="" G="" Y="" R="" D="" N=""
+fi
+
+say()  { printf '%s\n' "$*"; }
+warn() { printf '%swarning:%s %s\n' "$Y" "$N" "$*" >&2; }
+die()  { printf '%sawsv-sso: %s%s\n' "$R$B" "$*" "$N" >&2; exit 1; }
+tilde() { printf '%s' "${1/#"$HOME"/\~}"; }
+
+need_aws() {
+    command -v aws >/dev/null 2>&1 || die "aws not found — install AWS CLI v2"
+    case "$(aws --version 2>&1)" in
+        aws-cli/2.*) ;;
+        *) die "AWS CLI v2 is needed: v1 has no sso-session support" ;;
+    esac
+}
+
+# ------------------------------------------------------------ validation
+
+valid_name()   { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "bad ${2:-profile} name '$1'"; }
+valid_url()    { [[ "$1" =~ ^https://[^[:space:]]+$ ]] || die "start URL must be https://…, got '$1'"; }
+valid_acct()   { [[ "$1" =~ ^[0-9]{12}$ ]] || die "account must be 12 digits, got '$1'"; }
+valid_region() { [[ "$1" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "bad region '$1'"; }
+valid_role()   { [[ "$1" =~ ^[A-Za-z0-9+=,.@_-]{1,64}$ ]] || die "bad role name '$1'"; }
+
+# ------------------------------------------------------------ ~/.aws/config
+
+# The config without the awsv block: awsv owns that part and rewrites it.
+outside_block() {
+    [[ -f "$CONFIG" ]] || return 0
+    awk -v b="$BEGIN" -v e="$END" '$0==b {skip=1; next} $0==e {skip=0; next} !skip' "$CONFIG"
+}
+
+in_block() {   # true when the awsv block defines [profile NAME]
+    [[ -f "$CONFIG" ]] || return 1
+    awk -v b="$BEGIN" -v e="$END" -v h="[profile $1]" '
+        $0==b {inb=1; next} $0==e {inb=0; next}
+        inb { s=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); if (s==h) {found=1; exit} }
+        END {exit !found}' "$CONFIG"
+}
+
+# One key of a section outside the awsv block; HEADER is "profile x" or "sso-session x".
+ini_get() {
+    outside_block | awk -v h="[$1]" -v k="$2" '
+        /^[[:space:]]*\[/ { s=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); ins=(s==h); next }
+        ins {
+            line=$0; sub(/^[[:space:]]+/, "", line)
+            n=index(line, "="); if (!n) next
+            key=substr(line, 1, n-1); sub(/[[:space:]]+$/, "", key)
+            if (key==k) { v=substr(line, n+1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit }
+        }'
+}
+
+# Names of the sections of one kind outside the awsv block.
+sections() {   # kind: profile | sso-session
+    outside_block | sed -nE "s/^[[:space:]]*\\[$1[[:space:]]+([^]]+)\\].*/\\1/p" \
+        | sed 's/[[:space:]]*$//' | sort -u
+}
+
+backup_config() {
+    [[ -f "$CONFIG" ]] || return 0
+    mkdir -p "$BACKUP"
+    cp -p "$CONFIG" "$BACKUP/config.$(date +%s%N)"
+    # keep the last ten
+    find "$BACKUP" -maxdepth 1 -name 'config.*' -printf '%T@ %p\n' \
+        | sort -rn | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f --
+}
+
+# Set KEY = VALUE in [HEADER] outside the awsv block: the line is replaced if
+# present, added at the end of the section if not, and the section is added at
+# the end of the file if missing. Comments and other sections stay as they are.
+ini_set() {   # header key value
+    local tmp
+    mkdir -p "$(dirname "$CONFIG")"
+    [[ -f "$CONFIG" ]] || : > "$CONFIG"
+    tmp="$(mktemp "$CONFIG.XXXXXX")"
+    awk -v b="$BEGIN" -v e="$END" -v h="[$1]" -v k="$2" -v v="$3" '
+        function flush() { for (; blanks > 0; blanks--) print "" }
+        function close_section() { if (ins && !done) { print k " = " v; done=1 } ins=0; flush() }
+        $0==b { close_section(); inb=1; print; next }
+        $0==e { inb=0; print; next }
+        inb   { print; next }
+        /^[[:space:]]*\[/ {
+            close_section()
+            s=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+            if (s==h) { ins=1; seen=1 }
+            print; next
+        }
+        ins && /^[[:space:]]*$/ { blanks++; next }
+        ins {
+            flush()
+            line=$0; sub(/^[[:space:]]+/, "", line)
+            n=index(line, "=")
+            if (n) { key=substr(line, 1, n-1); sub(/[[:space:]]+$/, "", key)
+                     if (key==k) { if (!done) print k " = " v; done=1; next } }
+            print; next
+        }
+        { print }
+        END {
+            close_section()
+            if (!seen) { if (NR) print ""; print h; print k " = " v }
+        }' "$CONFIG" > "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CONFIG"
+}
+
+has_static_keys() {   # [NAME] of the credentials file holds keys
+    [[ -f "$CREDS" ]] || return 1
+    awk -v h="[$1]" '
+        /^[[:space:]]*\[/ { s=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); ins=(s==h); next }
+        ins && /^[[:space:]]*aws_access_key_id[[:space:]]*=/ {found=1; exit}
+        END {exit !found}' "$CREDS"
+}
+
+# The profile [default] hands on, when awsv made it an outside profile
+# ('awsv use NAME' writes "credential_process = … creds @NAME").
+awsv_default() {
+    [[ -f "$CONFIG" ]] || return 0
+    awk -v b="$BEGIN" -v e="$END" '
+        $0==b {inb=1; next} $0==e {inb=0; next}
+        inb && /^[[:space:]]*\[/ { s=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); ind=(s=="[default]"); next }
+        inb && ind && /credential_process/ && match($0, /creds @[A-Za-z0-9._-]+/) {
+            print substr($0, RSTART+7, RLENGTH-7); exit }' "$CONFIG"
+}
+
+is_sso_profile() { [[ -n "$(ini_get "profile $1" sso_session)$(ini_get "profile $1" sso_start_url)" ]]; }
+
+# ------------------------------------------------------------ commands
+
+# The permission set is the middle of the role name AWS gives an SSO login:
+# assumed-role/AWSReservedSSO_<permission set>_<hash>/<user>.
+permission_set() {
+    local re='assumed-role/AWSReservedSSO_(.+)_[0-9a-f]+/'
+    if [[ "$1" =~ $re ]]; then printf '%s' "${BASH_REMATCH[1]}"; else printf -- '-'; fi
+}
+
+cmd_login() {
+    local name="" session="" url="" sso_region="" account="" role="" region="" browser=0
+    while (($#)); do
+        case "$1" in
+            --start-url)  url="${2:?--start-url needs a value}"; shift 2 ;;
+            --sso-region) sso_region="${2:?--sso-region needs a value}"; shift 2 ;;
+            --account)    account="${2:?--account needs a value}"; shift 2 ;;
+            --role)       role="${2:?--role needs a value}"; shift 2 ;;
+            --region)     region="${2:?--region needs a value}"; shift 2 ;;
+            --session)    session="${2:?--session needs a value}"; shift 2 ;;
+            --browser)    browser=1; shift ;;
+            -h|--help)    help_login; return 0 ;;
+            -*)           die "login: unknown option '$1' — see 'awsv-sso help login'" ;;
+            *)            [[ -z "$name" ]] || die "login: one profile name only"; name="$1"; shift ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "login: which profile? — awsv-sso login NAME"
+    valid_name "$name"
+    [[ "$name" != default ]] || die "login: [default] belongs to awsv — pick another name, then 'awsv use NAME'"
+    in_block "$name" && die "'$name' is a vault account of awsv — pick another name"
+    if has_static_keys "$name"; then
+        die "[$name] of $(tilde "$CREDS") holds keys, and they win over an SSO login.
+         Remove that section first."
+    fi
+    need_aws
+
+    local known=0
+    is_sso_profile "$name" && known=1
+    if [[ "$known" == 0 ]] && sections profile | grep -qxF -- "$name"; then
+        [[ -n "$url" ]] || die "[profile $name] exists and is not an SSO profile.
+         Give --start-url, --account, --role and --region to turn it into one, or pick another name."
+    fi
+
+    # What the profile has now fills whatever the flags leave out.
+    [[ -n "$session" ]]    || session="$(ini_get "profile $name" sso_session)"
+    [[ -n "$session" ]]    || session="$name"
+    valid_name "$session" "session"
+    [[ -n "$url" ]]        || url="$(ini_get "sso-session $session" sso_start_url)"
+    [[ -n "$sso_region" ]] || sso_region="$(ini_get "sso-session $session" sso_region)"
+    [[ -n "$account" ]]    || account="$(ini_get "profile $name" sso_account_id)"
+    [[ -n "$role" ]]       || role="$(ini_get "profile $name" sso_role_name)"
+    [[ -n "$region" ]]     || region="$(ini_get "profile $name" region)"
+    [[ -n "$region" ]]     || region="$sso_region"
+    [[ -n "$sso_region" ]] || sso_region="$region"
+
+    local miss=()
+    [[ -n "$url" ]]     || miss+=(--start-url)
+    [[ -n "$account" ]] || miss+=(--account)
+    [[ -n "$role" ]]    || miss+=(--role)
+    [[ -n "$region" ]]  || miss+=(--region)
+    ((${#miss[@]} == 0)) || die "login: the first login of '$name' needs ${miss[*]}
+         e.g. awsv-sso login $name --start-url https://example.awsapps.com/start \\
+                --account 111122223333 --role ReadOnly --region us-east-1"
+    valid_url "$url"; valid_region "$sso_region"; valid_region "$region"
+    valid_acct "$account"; valid_role "$role"
+
+    # Write only what differs, so a plain repeat login leaves the file alone.
+    local -a want=(
+        "sso-session $session|sso_start_url|$url"
+        "sso-session $session|sso_region|$sso_region"
+        "sso-session $session|sso_registration_scopes|sso:account:access"
+        "profile $name|sso_session|$session"
+        "profile $name|sso_account_id|$account"
+        "profile $name|sso_role_name|$role"
+        "profile $name|region|$region"
+    )
+    local w h k v backed=0
+    for w in "${want[@]}"; do
+        IFS='|' read -r h k v <<< "$w"
+        [[ "$(ini_get "$h" "$k")" == "$v" ]] && continue
+        ((backed)) || { backup_config; backed=1; }
+        ini_set "$h" "$k" "$v"
+    done
+    if ((backed)); then
+        say "${G}[profile $name]${N} of $(tilde "$CONFIG"): account $account, role $role, region $region"
+    fi
+
+    # The device code needs no browser on this machine: open the URL anywhere
+    # and type the code. BROWSER=echo stops the CLI from starting a text-mode
+    # browser, which takes over the terminal and never finishes the login.
+    if ((browser)); then
+        aws sso login --profile "$name" || die "aws sso login failed"
+    else
+        env BROWSER=echo aws sso login --profile "$name" --use-device-code || die "aws sso login failed"
+    fi
+
+    local out acct arn
+    out="$(aws sts get-caller-identity --profile "$name" --query '[Account,Arn]' --output text 2>/dev/null)" \
+        || die "logged in, but STS refused the keys of '$name' — check --account and --role"
+    read -r acct arn <<< "$out"
+    printf '\n  %-15s %s\n  %-15s %s\n  %-15s %s\n\n' \
+        "Identity" "$arn" "Account" "$acct" "Permission set" "$(permission_set "$arn")"
+
+    if [[ "$(awsv_default)" == "$name" ]]; then
+        say "${D}[default] is $name, so plain aws and Terraform use this login${N}"
+    else
+        say "${D}plain aws still uses [default]; for this login: aws --profile $name …, or awsv use $name${N}"
+    fi
+}
+
+cmd_logout() {
+    case "${1:-}" in -h|--help) help_logout; return 0 ;; esac
+    (($# == 0)) || die "logout takes no name: the AWS CLI ends every SSO session at once"
+    need_aws
+    aws sso logout || die "aws sso logout failed"
+    say "${G}every SSO login of the AWS CLI is ended${N}: tokens and cached keys are gone"
+    local d; d="$(awsv_default)"
+    if [[ -n "$d" ]] && is_sso_profile "$d"; then
+        warn "[default] is $d, so plain aws now fails.
+         Log in again with: awsv-sso login $d
+         Or switch [default] to a vault account: awsv use NAME (see awsv ls)"
+    fi
+}
+
+cmd_status() {
+    case "${1:-}" in -h|--help) help_status; return 0 ;; esac
+    (($# == 0)) || die "status takes no arguments"
+    need_aws
+    local -a names=()
+    local p
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && is_sso_profile "$p" && names+=("$p")
+    done < <(sections profile)
+    if ((${#names[@]} == 0)); then
+        say "no SSO profiles in $(tilde "$CONFIG") — awsv-sso login NAME --start-url … creates one"
+        return 0
+    fi
+    local d arn mark state; d="$(awsv_default)"
+    printf '%s%-16s %-7s %-14s %-24s %s%s\n' "$B" NAME DEFAULT ACCOUNT ROLE LOGIN "$N"
+    for p in "${names[@]}"; do
+        mark=""; [[ "$p" == "$d" ]] && mark="*"
+        if arn="$(aws sts get-caller-identity --profile "$p" --query Arn --output text 2>/dev/null)"; then
+            state="${G}live${N}"
+        else
+            state="${D}expired or never — awsv-sso login $p${N}"
+        fi
+        printf '%-16s %-7s %-14s %-24s %s\n' "$p" "$mark" \
+            "$(ini_get "profile $p" sso_account_id)" "$(ini_get "profile $p" sso_role_name)" "$state"
+    done
+}
+
+# ------------------------------------------------------------ help
+
+usage() {
+    cat <<EOF
+${B}awsv-sso${N} logs in to AWS IAM Identity Center (SSO) and logs out.
+It stores no keys: the AWS CLI keeps the login in ~/.aws/sso/cache until it expires.
+[default] does not change here: awsv use NAME makes a login the one plain aws uses.
+
+${B}USAGE${N}
+    awsv-sso COMMAND [OPTIONS]
+    awsv-sso help COMMAND               # one command in full, with examples
+    awsv-sso COMMAND --help             # the same
+
+  Words in capitals are yours to fill in: NAME is a profile name such as work,
+  ID is a 12-digit account number, ROLE is a permission set, REGION is an AWS region.
+
+${B}START HERE${N}
+    awsv-sso login work --start-url https://example.awsapps.com/start \\
+        --account 111122223333 --role ReadOnly --region us-east-1   # the first time
+    awsv-sso login work                 # every next time: the settings are in ~/.aws/config
+    awsv use work                       # optional: plain aws and Terraform use this login
+
+${B}COMMANDS${N}
+    ${G}login${N} NAME [OPTIONS]            # write the profile, log in with a device code
+    ${G}status${N}                          # each SSO profile and whether its login is live
+    ${G}logout${N}                          # end every SSO login of the AWS CLI
+    ${G}help${N} [COMMAND]                  # this page, or one command
+
+${B}LOG OUT${N}
+  The AWS CLI cannot log out of one profile: aws sso logout ends every SSO login
+  and deletes the tokens and cached keys of all of them.
+  To stop using an SSO profile and keep its login: awsv use NAME of a vault account.
+
+${B}FILES${N}
+  ~/.aws/config                 [sso-session NAME] and [profile NAME]; the awsv block is left alone
+  ~/.aws/sso/cache/             the SSO login, kept by the AWS CLI; secret until it expires
+  ~/.aws/cli/cache/             keys the AWS CLI got with that login; secret until they expire
+  ~/.local/state/awsv-sso/      the last ten copies of ~/.aws/config before a change
+
+${B}ENVIRONMENT${N}
+  AWS_CONFIG_FILE               the config file instead of ~/.aws/config
+  AWS_SHARED_CREDENTIALS_FILE   the credentials file instead of ~/.aws/credentials
+  XDG_STATE_HOME                where the copies go, instead of ~/.local/state
+  NO_COLOR                      set it to turn colour off
+
+${B}EXIT STATUS${N}
+  0 done; 1 refused or failed, with the reason on stderr
+EOF
+}
+
+help_login() {
+    cat <<EOF
+${B}login${N} — write the profile and log in
+    awsv-sso login NAME [--start-url URL] [--account ID] [--role ROLE] [--region REGION]
+                        [--sso-region REGION] [--session S] [--browser]
+
+  The first login of NAME needs --start-url, --account, --role and --region. They
+  go to [sso-session NAME] and [profile NAME] of ~/.aws/config, so later logins
+  need only the name. A flag given later changes that one setting.
+
+${B}OPTIONS${N}
+  --start-url URL       the address of the AWS access portal, https://….awsapps.com/start
+  --account ID          the 12-digit account the role is in
+  --role ROLE           the permission set, as the portal names it
+  --region REGION       the region of the profile; also the SSO region, unless set
+  --sso-region REGION   the region of IAM Identity Center, when it differs
+  --session S           the name of the [sso-session] section; default NAME.
+                        Profiles with one session share one login.
+  --browser             open a browser on this machine instead of the device code
+  -h, --help            this page
+
+${B}EXAMPLES${N}
+    awsv-sso login work --start-url https://example.awsapps.com/start \\
+        --account 111122223333 --role ReadOnly --region us-east-1
+    awsv-sso login work                 # the login expired: log in again
+    awsv-sso login work --role Admin    # the same account, another permission set
+    awsv-sso login work-admin --session work --account 111122223333 --role Admin
+                                        # a second profile on the login of work
+
+  The device code: login prints a URL and a code. Open the URL in a browser on
+  any computer and type the code. This machine needs no browser.
+
+${B}REFUSED${N}
+  default                       [default] belongs to awsv; pick a name, then awsv use NAME
+  a name of the awsv block      that is an account of the vault
+  [NAME] in ~/.aws/credentials  with keys there, they win over the SSO login; remove that section
+  [profile NAME] without SSO    give --start-url, --account, --role and --region to convert it
+EOF
+}
+
+help_status() {
+    cat <<EOF
+${B}status${N} — each SSO profile and whether its login is live
+    awsv-sso status
+
+  Lists every [profile NAME] of ~/.aws/config with sso_session or sso_start_url.
+  It asks STS once per profile.
+
+${B}COLUMNS${N}
+  NAME      the profile name
+  DEFAULT   * when [default] is this profile (awsv use NAME)
+  ACCOUNT   sso_account_id of the profile
+  ROLE      sso_role_name of the profile
+  LOGIN     live, or expired or never: then awsv-sso login NAME
+EOF
+}
+
+help_logout() {
+    cat <<EOF
+${B}logout${N} — end every SSO login of the AWS CLI
+    awsv-sso logout
+
+  Runs aws sso logout. The AWS CLI has no logout of one profile: every SSO
+  login ends, and the tokens and cached keys of all SSO profiles are deleted.
+  When [default] is an SSO profile, plain aws fails after this. Then either
+      awsv-sso login NAME               # log in again
+      awsv use NAME                     # or make a vault account the [default]
+EOF
+}
+
+help_topic() {
+    case "${1:-}" in
+        "")     usage ;;
+        login)  help_login ;;
+        status) help_status ;;
+        logout) help_logout ;;
+        help)   usage ;;
+        *)      die "no help topic '$1' — topics: login status logout" ;;
+    esac
+}
+
+main() {
+    local cmd="${1:-}"
+    (($#)) && shift
+    case "$cmd" in
+        login)            cmd_login "$@" ;;
+        logout)           cmd_logout "$@" ;;
+        status)           cmd_status "$@" ;;
+        help|-h|--help)   help_topic "${1:-}" ;;
+        "")               usage ;;
+        *)                usage >&2; die "unknown command '$cmd' — see awsv-sso --help" ;;
+    esac
+}
+
+main "$@"

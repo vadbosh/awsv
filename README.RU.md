@@ -14,19 +14,20 @@ awsv хранит ключи доступа AWS в зашифрованном с
 ```bash
 git clone https://github.com/vadbosh/awsv.git
 cd awsv
-./install.sh            # проверит, всё ли есть, и установит awsv в ~/.local/bin
+./install.sh            # проверит, всё ли есть, и установит обе команды в ~/.local/bin
 ```
 
 | Параметр установщика | Что делает |
 |---|---|
 | `./install.sh --check` | только проверяет, ничего не меняет |
 | `./install.sh --dry-run` | проверяет и говорит, что записал бы |
-| `./install.sh --uninstall` | удаляет команду и автодополнение; сейф остаётся |
+| `./install.sh --uninstall` | удаляет обе команды и автодополнение; сейф остаётся |
 | `./install.sh --uninstall --force` | то же, даже если `~/.aws/config` ещё обращается к awsv |
 | `PREFIX=/opt/bin ./install.sh` | ставит в другой каталог |
 
 Ещё установщик добавляет автодополнение для bash: в новом терминале Tab после
-awsv подсказывает команды, имена аккаунтов и значения параметров.
+awsv подсказывает команды, имена аккаунтов и значения параметров, а после
+awsv-sso — его команды, SSO-профили и регионы.
 
 ## Быстрый старт
 
@@ -197,6 +198,24 @@ awsv status          # сейф, каждый аккаунт, что откры�
 | `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` | `~/.aws/config`, `~/.aws/credentials` | какие файлы AWS awsv читает и пишет |
 | `NO_COLOR` | не задана | если задана, вывод без цвета |
 
+## Вход через SSO: awsv-sso
+
+awsv-sso входит в AWS IAM Identity Center (SSO) и выходит из него. Ключей он не
+хранит: вход держит сам AWS CLI в `~/.aws/sso/cache`, пока тот не истечёт.
+
+```bash
+awsv-sso login sso --start-url https://example.awsapps.com/start \
+    --account 111122223333 --role ReadOnly --region us-east-1   # в первый раз
+awsv-sso login sso                  # в следующие разы: настройки уже в ~/.aws/config
+awsv-sso status                     # все SSO-профили и жив ли вход каждого
+awsv-sso logout                     # завершить все входы SSO в AWS CLI
+awsv use sso                        # по желанию: простой aws и Terraform пойдут через этот вход
+```
+
+Выйти из одного профиля AWS CLI не умеет, поэтому `awsv-sso logout` завершает
+сразу все входы SSO. Все параметры, код устройства, два профиля на одном входе
+и сообщения об ошибках: [docs/sso.ru.md](docs/sso.ru.md).
+
 ## Где лежат секреты и данные
 
 [![Где awsv хранит секреты и данные](docs/diagrams/storage.png)](docs/diagrams/storage.png)
@@ -209,9 +228,11 @@ awsv status          # сейф, каждый аккаунт, что откры�
 | `~/.local/share/awsv/meta/NAME` | регион, режим, замок, номер аккаунта | нет |
 | `~/.local/share/awsv/active`, `lock`, `unlocked-until` | имя `[default]`, замок для новых аккаунтов, конец окна открытия | нет |
 | `~/.gnupg/` | ключ GPG общего пароля; `gpg-agent.conf` | ключ — да, под паролем |
-| `~/.aws/config` | профили, которые вызывают `awsv creds NAME`, между двумя строками-маркерами | нет |
+| `~/.aws/config` | профили, которые вызывают `awsv creds NAME`, между двумя строками-маркерами; вне их — SSO-профили awsv-sso | нет |
 | `~/.aws/credentials` | ничего: файл остаётся пустым | нет |
 | `$XDG_RUNTIME_DIR/awsv/NAME` | сессия на час, открытым текстом, в памяти | да, пока не истечёт |
+| `~/.aws/sso/cache/`, `~/.aws/cli/cache/` | вход SSO и его ключи, их держит AWS CLI; `awsv-sso logout` их удаляет | да, пока не истекут |
+| `~/.local/state/awsv-sso/` | десять последних копий `~/.aws/config` до правки awsv-sso | нет |
 
 ## От чего сейф не защищает
 

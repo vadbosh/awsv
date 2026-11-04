@@ -309,6 +309,7 @@ is complete and everything works.
 ```bash
 ./tests/test_awsv.sh             # the commands themselves
 ./tests/test_docs_commands.sh    # every command the help and the documentation show you
+./tests/test_awsv_sso.sh         # awsv-sso, with a stand-in for aws: nothing reaches AWS
 ```
 
 The second test collects every `awsv …` a reader can see: in the help, the

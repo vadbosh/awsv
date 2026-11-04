@@ -7,9 +7,10 @@
 #   ./install.sh --dry-run    check, then say what would change
 #   ./install.sh --uninstall  remove the installed command; the vault stays
 #
-# Two files are installed: awsv into $PREFIX (default ~/.local/bin), and its
-# Tab completion into the directory bash-completion reads for this user
-# (default ~/.local/share/bash-completion/completions/awsv).
+# Four files are installed: awsv and awsv-sso into $PREFIX (default
+# ~/.local/bin), and the Tab completion of each into the directory
+# bash-completion reads for this user
+# (default ~/.local/share/bash-completion/completions/awsv and awsv-sso).
 # The installer does not create the GPG key and does not touch ~/.aws.
 # Run 'awsv init' after it.
 
@@ -17,11 +18,13 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 DEST="$PREFIX/awsv"
+SSO="$PREFIX/awsv-sso"
 # bash-completion looks in each directory of BASH_COMPLETION_USER_DIR, else in
 # $XDG_DATA_HOME/bash-completion; the first one is where this file goes.
 COMPDIR="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}"
 COMPDIR="${COMPDIR%%:*}/completions"
 COMP="$COMPDIR/awsv"
+COMP_SSO="$COMPDIR/awsv-sso"
 CONFIG="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -170,6 +173,8 @@ install_it() {
     local dry="$1"
     printf '\n%sInstall%s\n' "$B" "$N"
     install_file "$dry" "$SRC/awsv" "$DEST" 0755
+    install_file "$dry" "$SRC/SSO/awsv-sso" "$SSO" 0755
+    install_file "$dry" "$SRC/SSO/awsv-sso-completion.bash" "$COMP_SSO" 0644
     install_file "$dry" "$SRC/awsv-completion.bash" "$COMP" 0644
 }
 
@@ -184,7 +189,9 @@ uninstall_it() {
     fi
     rm -f "$DEST"
     ok "removed $DEST"
+    if [ -e "$SSO" ]; then rm -f "$SSO"; ok "removed $SSO"; fi
     if [ -e "$COMP" ]; then rm -f "$COMP"; ok "removed $COMP"; fi
+    if [ -e "$COMP_SSO" ]; then rm -f "$COMP_SSO"; ok "removed $COMP_SSO"; fi
     printf '%sThe vault is still in %s: keys, settings and backups are untouched.%s\n' \
         "$Y" "${AWSV_HOME:-$HOME/.local/share/awsv}" "$N"
 }

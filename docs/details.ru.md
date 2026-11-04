@@ -309,6 +309,7 @@ awsv add client --region us-east-2 --lock own          # новый ключ и�
 ```bash
 ./tests/test_awsv.sh             # сами команды
 ./tests/test_docs_commands.sh    # каждая команда, которую показывают справка и документация
+./tests/test_awsv_sso.sh         # awsv-sso, с подменой aws: в AWS ничего не уходит
 ```
 
 Второй тест собирает каждое `awsv …` из справки, обоих README, страниц в
