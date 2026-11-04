@@ -333,7 +333,8 @@ ${B}COMMANDS${N}
 ${B}LOG OUT${N}
   The AWS CLI cannot log out of one profile: aws sso logout ends every SSO login
   and deletes the tokens and cached keys of all of them.
-  To stop using an SSO profile and keep its login: awsv use NAME of a vault account.
+  To stop using an SSO profile but keep the login, make a vault account the
+  [default]: awsv use NAME.
 
 ${B}FILES${N}
   ~/.aws/config                 [sso-session NAME] and [profile NAME]; the awsv block is left alone

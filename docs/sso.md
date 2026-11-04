@@ -5,7 +5,7 @@ keys. The AWS CLI keeps the login in `~/.aws/sso/cache` until it expires, and
 awsv-sso writes only the settings of the profile to `~/.aws/config`.
 
 `./install.sh` of this repository installs it next to awsv, with Tab completion
-for bash. It needs AWS CLI v2. `awsv-sso --help` shows the commands,
+for bash. It needs AWS CLI v2. `awsv-sso --help` shows every command,
 `awsv-sso help login` one command in full.
 
 ## The first login
@@ -18,6 +18,9 @@ Take four settings from the AWS access portal of your organization:
 | account | the 12-digit number under the account name | `--account` |
 | role | the permission set under the account, such as `ReadOnly` | `--role` |
 | region | the region your resources are in | `--region` |
+
+`--region` is also taken as the region of IAM Identity Center. When Identity
+Center is in another region, add `--sso-region` with that region.
 
 ```bash
 awsv-sso login work --start-url https://example.awsapps.com/start \
@@ -49,8 +52,9 @@ sso_role_name = ReadOnly
 region = us-east-1
 ```
 
-A profile written by hand, or by `aws configure sso`, works the same way: when
-it has `sso_session`, its first login with awsv-sso needs no options.
+A profile written by hand, or by `aws configure sso`, works the same way.
+awsv-sso takes from it every setting it already has. A profile with all four
+needs no options; a profile without the role needs only `--role`.
 
 ## Every next login
 
@@ -59,8 +63,8 @@ awsv-sso login work
 ```
 
 The login expires after the time your organization set. Then `aws` answers
-with an error about an expired token, and the same command logs in again. The
-file does not change.
+with an error about an expired token, and the same command logs in again.
+`~/.aws/config` does not change.
 
 ## Options of login
 
@@ -80,8 +84,8 @@ Another permission set in the same account:
 awsv-sso login work --role Admin
 ```
 
-Two profiles on one login, one per permission set. Both use the session
-`work`, so one login serves both:
+Two profiles can share one login, one profile per permission set. Both use the
+session `work`, so one login serves both:
 
 ```bash
 awsv-sso login work-admin --session work --account 111122223333 --role Admin
@@ -124,8 +128,8 @@ awsv-sso logout
 ```
 
 It runs `aws sso logout`. **The AWS CLI cannot log out of one profile**, so
-every SSO login ends. The tokens and cached keys of all SSO profiles are
-deleted from `~/.aws/sso/cache` and `~/.aws/cli/cache`.
+every SSO login ends. `aws sso logout` deletes the tokens and cached keys of all
+SSO profiles from `~/.aws/sso/cache` and `~/.aws/cli/cache`.
 
 When `[default]` was an SSO profile, plain `aws` fails after that. awsv-sso
 says so. Then either log in again or switch `[default]`:
@@ -156,7 +160,7 @@ files, `XDG_STATE_HOME` moves the copies, and `NO_COLOR` turns colour off.
 |---|---|---|
 | `the first login of 'work' needs --start-url --account --role --region` | the profile has no SSO settings yet | give the options it lists |
 | `'work' is a vault account of awsv` | the awsv block has this name | pick another name |
-| `[work] of ~/.aws/credentials holds keys` | those keys would win over the SSO login | remove that section, or move the keys into the vault with awsv |
+| `[work] of ~/.aws/credentials holds keys` | those keys would win over the SSO login | remove that section, or move the keys into the vault under another name: `awsv import SECTION --as NAME` |
 | `[profile work] exists and is not an SSO profile` | the profile gets its keys another way | give the four options to convert it, or pick another name |
 | `logged in, but STS refused the keys` | the role is not in that account | check `--account` and `--role` in the portal |
 | `AWS CLI v2 is needed` | `aws --version` is v1 | install AWS CLI v2 |

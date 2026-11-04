@@ -201,7 +201,8 @@ awsv status          # сейф, каждый аккаунт, что откры�
 ## Вход через SSO: awsv-sso
 
 awsv-sso входит в AWS IAM Identity Center (SSO) и выходит из него. Ключей он не
-хранит: вход держит сам AWS CLI в `~/.aws/sso/cache`, пока тот не истечёт.
+хранит: вход держит сам AWS CLI в `~/.aws/sso/cache`, пока не истечёт срок
+входа.
 
 ```bash
 awsv-sso login sso --start-url https://example.awsapps.com/start \

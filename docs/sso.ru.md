@@ -1,23 +1,26 @@
 # awsv-sso: вход через SSO
 
 awsv-sso входит в AWS IAM Identity Center (SSO) и выходит из него. Ключей он не
-хранит. Вход держит сам AWS CLI в `~/.aws/sso/cache`, пока тот не истечёт, а
-awsv-sso записывает в `~/.aws/config` только настройки профиля.
+хранит. Вход держит сам AWS CLI в `~/.aws/sso/cache`, пока не истечёт срок
+входа, а awsv-sso записывает в `~/.aws/config` только настройки профиля.
 
-Его ставит `./install.sh` этого репозитория, рядом с awsv, вместе с
+`./install.sh` этого репозитория ставит awsv-sso рядом с awsv, вместе с
 автодополнением по Tab для bash. Нужен AWS CLI v2. `awsv-sso --help` показывает
-команды, `awsv-sso help login` — одну команду целиком.
+все команды, `awsv-sso help login` — одну команду целиком.
 
 ## Первый вход
 
-Четыре настройки берутся из AWS access portal вашей организации:
+Четыре настройки нужно взять из AWS access portal организации:
 
 | Настройка | Где взять | Параметр |
 |---|---|---|
 | start URL | адрес портала, `https://….awsapps.com/start` | `--start-url` |
 | аккаунт | 12 цифр под названием аккаунта | `--account` |
 | роль | permission set под аккаунтом, например `ReadOnly` | `--role` |
-| регион | регион, где ваши ресурсы | `--region` |
+| регион | регион, в котором лежат ресурсы | `--region` |
+
+`--region` становится и регионом IAM Identity Center. Если Identity Center
+работает в другом регионе, добавьте `--sso-region` с этим регионом.
 
 ```bash
 awsv-sso login work --start-url https://example.awsapps.com/start \
@@ -49,9 +52,9 @@ sso_role_name = ReadOnly
 region = us-east-1
 ```
 
-Профиль, написанный вручную или командой `aws configure sso`, работает так же:
-если в нём есть `sso_session`, параметры не нужны и при первом входе через
-awsv-sso.
+Профиль, написанный вручную или командой `aws configure sso`, работает так же.
+awsv-sso берёт из него все настройки, которые там уже есть. Профилю со всеми
+четырьмя параметры не нужны, а профилю без роли нужен только `--role`.
 
 ## Следующие входы
 
@@ -60,8 +63,8 @@ awsv-sso login work
 ```
 
 Вход истекает через срок, который задала организация. Тогда `aws` отвечает
-ошибкой про истёкший токен, и та же команда входит снова. Файл при этом не
-меняется.
+ошибкой про истёкший токен, и та же команда входит снова. `~/.aws/config` при
+этом не меняется.
 
 ## Параметры login
 
@@ -70,7 +73,7 @@ awsv-sso login work
 | `--start-url URL` | адрес портала; нужен при первом входе | `--start-url https://example.awsapps.com/start` |
 | `--account ID` | аккаунт; нужен при первом входе | `--account 111122223333` |
 | `--role ROLE` | permission set; если указать позже, заменит прежний | `--role Admin` |
-| `--region REGION` | регион профиля, и SSO тоже, если нет `--sso-region` | `--region eu-central-1` |
+| `--region REGION` | регион профиля; он же регион SSO, если не задан `--sso-region` | `--region eu-central-1` |
 | `--sso-region REGION` | регион IAM Identity Center, если он другой | `--sso-region us-east-1` |
 | `--session S` | имя секции `[sso-session]`; по умолчанию имя профиля | `--session work` |
 | `--browser` | открыть браузер на этой машине вместо кода устройства | `--browser` |
@@ -81,8 +84,8 @@ awsv-sso login work
 awsv-sso login work --role Admin
 ```
 
-Два профиля на одном входе, по одному на permission set. У обоих сессия
-`work`, поэтому одного входа хватает на оба:
+Два профиля могут работать на одном входе, по профилю на каждый permission set.
+У обоих сессия `work`, поэтому одного входа хватает на оба:
 
 ```bash
 awsv-sso login work-admin --session work --account 111122223333 --role Admin
@@ -100,8 +103,8 @@ aws sts get-caller-identity # AWSReservedSSO_ReadOnly_…
 awsv use client             # обратно на аккаунт сейфа
 ```
 
-Terraform тоже идёт в `[default]`, если в его блоке `provider "aws"` не указан
-свой `profile`.
+Terraform тоже берёт ключи из `[default]`, если в его блоке `provider "aws"` не
+указан свой `profile`.
 
 ## Проверить входы
 
@@ -125,8 +128,9 @@ awsv-sso logout
 ```
 
 Команда запускает `aws sso logout`. **Выйти из одного профиля AWS CLI не
-умеет**, поэтому завершаются все входы SSO. Токены и ключи из кэша всех
-SSO-профилей удаляются из `~/.aws/sso/cache` и `~/.aws/cli/cache`.
+умеет**, поэтому завершаются все входы SSO. `aws sso logout` удаляет токены и
+закэшированные ключи всех SSO-профилей из `~/.aws/sso/cache` и
+`~/.aws/cli/cache`.
 
 Если `[default]` был SSO-профилем, простой `aws` после этого не работает, и
 awsv-sso об этом скажет. Тогда войдите снова или переключите `[default]`:
@@ -149,7 +153,7 @@ awsv use client
 | `~/.local/state/awsv-sso/` | десять последних копий `~/.aws/config` до правки awsv-sso | нет |
 
 Переменные `AWS_CONFIG_FILE` и `AWS_SHARED_CREDENTIALS_FILE` переносят файлы
-AWS, `XDG_STATE_HOME` — копии, `NO_COLOR` отключает цвет.
+AWS, `XDG_STATE_HOME` переносит копии, а `NO_COLOR` отключает цвет.
 
 ## Ошибки
 
@@ -157,7 +161,7 @@ AWS, `XDG_STATE_HOME` — копии, `NO_COLOR` отключает цвет.
 |---|---|---|
 | `the first login of 'work' needs --start-url --account --role --region` | у профиля ещё нет настроек SSO | указать перечисленные параметры |
 | `'work' is a vault account of awsv` | это имя есть в блоке awsv | выбрать другое имя |
-| `[work] of ~/.aws/credentials holds keys` | эти ключи перекрыли бы вход через SSO | удалить эту секцию или перенести ключи в сейф awsv |
+| `[work] of ~/.aws/credentials holds keys` | эти ключи перекрыли бы вход через SSO | удалить эту секцию или перенести ключи в сейф под другим именем: `awsv import SECTION --as NAME` |
 | `[profile work] exists and is not an SSO profile` | профиль получает ключи по-другому | указать четыре параметра, чтобы превратить его в SSO-профиль, или выбрать другое имя |
 | `logged in, but STS refused the keys` | этой роли нет в этом аккаунте | сверить `--account` и `--role` с порталом |
 | `AWS CLI v2 is needed` | `aws --version` показывает v1 | поставить AWS CLI v2 |
@@ -165,7 +169,7 @@ AWS, `XDG_STATE_HOME` — копии, `NO_COLOR` отключает цвет.
 ## Тесты
 
 ```bash
-./tests/test_awsv_sso.sh    # вместо aws подменная программа: в AWS ничего не уходит
+./tests/test_awsv_sso.sh    # aws подменён заглушкой: в AWS ничего не уходит
 ```
 
 Тест работает во временном домашнем каталоге и ваш `~/.aws` не читает.
