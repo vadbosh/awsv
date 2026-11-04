@@ -71,7 +71,7 @@ gpg --batch --pinentry-mode loopback --passphrase '' \
 
 # The layout this machine had: [profile default] plus commented SSO lines in the config,
 # an active [default] and a commented #[beta] in the credentials file.
-printf '[profile default]\noutput = json\nregion = us-east-1\n\n#[sso-session thoth]\n#sso_region = us-east-1\n' \
+printf '[profile default]\noutput = json\nregion = us-east-1\n\n#[sso-session corp]\n#sso_region = us-east-1\n' \
     > "$AWS_CONFIG_FILE"
 printf '[default]\naws_access_key_id = AKIA000000000001\naws_secret_access_key = 0000000000\n\n#[beta]\n#aws_access_key_id = AKIA000000000002\n#aws_secret_access_key = 0000000000\n' \
     > "$AWS_SHARED_CREDENTIALS_FILE"
@@ -94,7 +94,7 @@ has "credentials untouched on failure" '^\[default\]' "$AWS_SHARED_CREDENTIALS_F
 
 t "take-default" 0 awsv init --take-default
 has "default commented out" '^# awsv: \[profile default\]' "$AWS_CONFIG_FILE"
-has "SSO comment left alone" '^#\[sso-session thoth\]' "$AWS_CONFIG_FILE"
+has "SSO comment left alone" '^#\[sso-session corp\]' "$AWS_CONFIG_FILE"
 hasnt "a blank line is not turned into a comment" '^# awsv: *$' "$AWS_CONFIG_FILE"
 
 t "import active section" 0 awsv import default --as alpha --no-verify --mode direct
