@@ -109,7 +109,7 @@ a shared one, the same as add.
 ### ls — list the accounts
 
 ```bash
-awsv ls       # * marks [default]; then mode, lock, region, account number
+awsv ls       # * marks [default]; then mode, lock, when the MFA session ends, region, account number
 ```
 
 ### use — switch the [default] account

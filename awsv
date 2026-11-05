@@ -935,30 +935,51 @@ cmd_import() {
 }
 
 cmd_ls() {
-    local n act any=0
+    local n act i w
+    local -a rows=() lit=() width=()
     act="$(active)"
-    printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$B" NAME DEFAULT MODE LOCK REGION ACCOUNT ARN "$N"
+    # Rows first, widths after: each column is as wide as its longest value, so
+    # the table stays narrow whatever the names and ARNs are.
+    rows+=("NAME|DEFAULT|MODE|LOCK|SESSION|REGION|ACCOUNT|ARN"); lit+=(head)
     for n in $(names); do
-        any=1
-        # the whole row in one colour: escape codes inside a padded column break the alignment
-        printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$([ "$n" = "$act" ] && printf '%s' "$G$B")" \
-            "$n" "$([ "$n" = "$act" ] && echo '*')" \
-            "$(if [ -n "$(meta_get "$n" mfa)" ]; then echo mfa; else meta_get "$n" mode; fi)" "$(lock_of "$n")" "$(meta_get "$n" region)" \
-            "$(meta_get "$n" account)" "$(meta_get "$n" arn)" "$N"
+        rows+=("$n|$([ "$n" = "$act" ] && echo '*')|$(if [ -n "$(meta_get "$n" mfa)" ]; then echo mfa; else meta_get "$n" mode; fi)|$(lock_of "$n")|$(ls_session "$n")|$(meta_get "$n" region)|$(meta_get "$n" account)|$(meta_get "$n" arn)")
+        lit+=("$([ "$n" = "$act" ] && echo on)")
     done
     # Profiles kept outside the vault, which awsv use can make the [default].
     for n in $(external_profiles); do
         exists "$n" && continue   # a vault account of that name wins, and is listed above
-        any=1
-        printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$([ "@$n" = "$act" ] && printf '%s' "$G$B")" \
-            "$n" "$([ "@$n" = "$act" ] && echo '*')" external - \
-            "$(external_region "$n")" - "[profile $n] in $CONFIG" "$N"
+        rows+=("$n|$([ "@$n" = "$act" ] && echo '*')|external|-|-|$(external_region "$n")|-|[profile $n] in $CONFIG")
+        lit+=("$([ "@$n" = "$act" ] && echo on)")
     done
-    [ "$any" = 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
-    for n in $(names); do   # MFA accounts: how long their session has left
-        [ -n "$(meta_get "$n" mfa)" ] && say "  $n: $(mfa_left "$n")"
+    local -a f
+    for i in "${!rows[@]}"; do
+        IFS='|' read -r -a f <<< "${rows[i]}"
+        for w in 0 1 2 3 4 5 6; do
+            f[w]="${f[w]:-}"   # read -a drops empty fields at the end of the row
+            [ "${#f[w]}" -le "${width[w]:-0}" ] || width[w]="${#f[w]}"
+        done
     done
+    for i in "${!rows[@]}"; do
+        IFS='|' read -r -a f <<< "${rows[i]}"
+        # the whole row in one colour: escape codes inside a padded column break the alignment
+        case "${lit[i]}" in head) printf '%s' "$B" ;; on) printf '%s' "$G$B" ;; esac
+        for w in 0 1 2 3 4 5 6; do printf '%-*s  ' "${width[w]}" "${f[w]:-}"; done
+        printf '%s%s\n' "${f[7]:-}" "$N"
+    done
+    [ "${#rows[@]}" -gt 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
     return 0
+}
+
+# The SESSION column of ls: when the MFA session of an account ends.
+ls_session() {   # NAME
+    local cache exp_s left
+    [ -n "$(meta_get "$1" mfa)" ] || { echo -; return 0; }
+    cache="$(cache_file "$1")"
+    [ -n "$cache" ] && [ -f "$cache" ] || { echo none; return 0; }
+    exp_s="$(date -d "$(sed -n 4p "$cache")" +%s 2>/dev/null || echo 0)"
+    left=$(( exp_s - $(date +%s) ))
+    if [ "$left" -le 60 ]; then echo ended
+    else echo "$(date -d "@$exp_s" '+%H:%M') ($(human "$left"))"; fi
 }
 
 cmd_use() {

@@ -191,7 +191,7 @@ t "--mfa set" 0 awsv set other --mfa arn:aws:iam::111122223333:mfa/phone
 has "says how to start a session" 'awsv unlock other' "$T/out"
 t "ls with an MFA account" 0 awsv ls
 has "MODE says mfa" '^other +mfa +shared ' "$T/out"
-has "ls: no MFA session yet" '^  other: no MFA session — awsv unlock other' "$T/out"
+has "ls: SESSION none before unlock" '^other +mfa +shared +none ' "$T/out"
 t "status of an MFA account" 0 awsv status
 has "status: mode mfa" '^    mode +mfa — tools get a session made with an MFA code' "$T/out"
 has "status: no session yet" '^    session +no MFA session' "$T/out"
@@ -218,7 +218,7 @@ EOF
     has "STS gets the device, the code and the window" '--serial-number arn:aws:iam::111122223333:mfa/phone --token-code 123456 --duration-seconds 1800' "$T/mfa.log"
     has "the MFA session is in the cache" '^ASIA000000000088$' "$AWSV_RUN/other"
     t "ls after unlock" 0 awsv ls
-    has "ls: how long the MFA session has left" '^  other: MFA session until .*, (29m|30m) left' "$T/out"
+    has "ls: SESSION says until when and how long" '^other +mfa +shared +[0-9]{2}:[0-9]{2} \((29m|30m)\) ' "$T/out"
     printf '12\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1
     has "a short code is refused" 'the MFA code is six digits; to try again: awsv unlock other' "$T/out"
     printf '654321\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1
@@ -523,7 +523,7 @@ same "but not to show" "$names" "$(comp awsv show '')"
 t "a vault account again" 0 awsv use "$n1"
 yes_ [ "$(cat "$V/active")" = "$n1" ]
 t "ls after the way back" 0 awsv ls
-has "lists the outside profiles too, without *" '^sso +external +- +eu-west-3 ' "$T/out"
+has "lists the outside profiles too, without *" '^sso +external +- +- +eu-west-3 ' "$T/out"
 hasnt "and none of them as [default]" '^(sso|loop) +\*' "$T/out"
 # --------------------------------------------------------------- install.sh
 P="$T/prefix"
