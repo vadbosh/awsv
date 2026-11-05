@@ -181,6 +181,49 @@ if command -v script >/dev/null 2>&1; then
     t "lock" 0 awsv lock
     yes_ [ ! -e "$V/unlocked-until" ]                                   # lock forgets the end
 fi
+
+# --mfa: an account whose policy requires MFA gets its keys only as a session
+# made with a code, which unlock asks for. A stand-in answers the STS call that
+# carries --serial-number; every other aws call goes to the real aws.
+t "--mfa: a bad device" 1 awsv set other --mfa bogus
+has "says what it wants" 'bad MFA device' "$T/out"
+t "--mfa set" 0 awsv set other --mfa arn:aws:iam::111122223333:mfa/phone
+has "says how to start a session" 'awsv unlock other' "$T/out"
+t "ls with an MFA account" 0 awsv ls
+has "MODE says mfa" '^other +mfa +shared ' "$T/out"
+t "creds before an MFA session" 1 awsv creds other
+has "names the command" "MFA session of 'other' has ended or was never started — awsv unlock other" "$T/out"
+hasnt "never the bare key" 'AKIA000000000003' "$T/out"
+if command -v script >/dev/null 2>&1; then
+    REAL_AWS="$(command -v aws)"
+    cat > "$T/bin/aws" <<EOF
+#!/bin/sh
+case "\$*" in *"get-session-token --serial-number"*)
+    printf '%s\n' "\$*" >> "$T/mfa.log"
+    case "\$*" in *"--token-code 123456"*)
+        printf 'ASIA000000000088\tmfasecret\tmfatoken\t%s\n' "\$(date -u -d '+30 min' +%Y-%m-%dT%H:%M:%SZ)"; exit 0 ;; esac
+    echo "An error occurred (AccessDenied) when calling the GetSessionToken operation: MultiFactorAuthentication failed with invalid MFA one time pass code." >&2
+    exit 254 ;;
+esac
+exec "$REAL_AWS" "\$@"
+EOF
+    chmod 755 "$T/bin/aws"
+    printf '123456\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1
+    has "unlock asks for the code" 'MFA code for other \(phone\)' "$T/out"
+    has "and makes the session" 'MFA session for other until' "$T/out"
+    has "STS gets the device, the code and the window" '--serial-number arn:aws:iam::111122223333:mfa/phone --token-code 123456 --duration-seconds 1800' "$T/mfa.log"
+    has "the MFA session is in the cache" '^ASIA000000000088$' "$AWSV_RUN/other"
+    printf '12\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1
+    has "a short code is refused" 'the MFA code is six digits; to try again: awsv unlock other' "$T/out"
+    printf '654321\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1
+    has "a wrong code: STS says why" 'STS refused the MFA session of .other.: .*invalid MFA one time pass code' "$T/out"
+    rm -f "$T/bin/aws"
+    awsv lock >/dev/null 2>&1
+fi
+t "--mfa none" 0 awsv set other --mfa none
+has "says it works as before" 'MFA: none' "$T/out"
+t "without MFA: the key as before" 0 awsv creds other
+has "direct mode again" '"AccessKeyId":"AKIA000000000003"' "$T/out"
 t "passwd needs a terminal" 1 awsv passwd
 has "and says so" 'needs a terminal' "$T/out"
 t "help" 0 awsv --help
@@ -322,6 +365,16 @@ plant_session
 t "window over: the cached session is not handed out" 1 awsv creds locked
 hasnt "no session in the output" 'ASIA000000000077' "$T/out"
 yes_ [ ! -e "$AWSV_RUN/locked" ]
+# The same for an MFA session: while the passphrase is held, creds hands it out.
+t "locked gets an MFA device" 0 awsv set locked --mfa arn:aws:iam::111122223333:mfa/phone
+gpg --batch --pinentry-mode loopback --passphrase 'pw' --quiet --decrypt "$AWSV_HOME/keys/locked.gpg" >/dev/null 2>&1
+plant_session
+t "creds hands out the MFA session" 0 awsv creds locked
+has "the session, not the key" '"AccessKeyId":"ASIA000000000077"' "$T/out"
+rm -f "$AWSV_RUN/locked"
+t "no MFA session: refused, even with the passphrase open" 1 awsv creds locked
+has "and names unlock" "MFA session of 'locked' has ended" "$T/out"
+t "locked: MFA off" 0 awsv set locked --mfa none
 t "back to direct" 0 awsv set locked --mode direct
 
 # Two locks in one vault: the shared passphrase 'pw', and 'solo' with its own
@@ -413,8 +466,8 @@ same "a prefix narrows the commands" "status" "$(comp awsv sta)"
 same "account names come from keys/" "$names" "$(comp awsv use '')"
 same "and for show, rm, set, lock" "$names" "$(comp awsv show '')"
 same "add takes a new name: nothing to offer" "" "$(comp awsv add '')"
-same "options after the name" "--lock --mode --region" "$(comp awsv set "$n1" '')"
-same "an option given is not offered again" "--lock --region" "$(comp awsv set "$n1" --mode direct '')"
+same "options after the name" "--lock --mfa --mode --region" "$(comp awsv set "$n1" '')"
+same "an option given is not offered again" "--lock --mfa --region" "$(comp awsv set "$n1" --mode direct '')"
 same "--lock values" "own shared" "$(comp awsv set "$n1" --lock '')"
 same "--mode values" "direct session" "$(comp awsv add new --mode '')"
 same "--region values" "eu-central-1 eu-central-2" "$(comp awsv add new --region eu-cent)"
@@ -432,7 +485,7 @@ same "import offers sections, commented ones too" "beta client odd" \
     "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import '')"
 same "no key line reaches the reply" "" \
     "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import AKIA)"
-same "import options after the section" "--as --keep --lock --mode --no-verify --region" \
+same "import options after the section" "--as --keep --lock --mfa --mode --no-verify --region" \
     "$(AWS_SHARED_CREDENTIALS_FILE="$T/c.ini" comp awsv import client '')"
 same "no vault: no names, no error" "" "$(AWSV_HOME="$T/none" comp awsv use '')"
 

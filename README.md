@@ -139,7 +139,16 @@ awsv set client --mode direct        # tools get the key itself; use it for Terr
 awsv set client --mode session       # tools get a one-hour session (the default)
 awsv set client --lock own           # asks the current passphrase, then a new one
 awsv set client --lock shared        # back to the shared passphrase
+awsv set client --mfa arn:aws:iam::111122223333:mfa/phone   # its IAM policy requires MFA
+awsv set client --mfa none           # no MFA again
 ```
+
+`--mfa` is for an IAM user whose policy allows nothing without MFA. Give it the
+ARN of the MFA device from IAM, Security credentials of that user. From then on
+aws gets the account only as a session made with an MFA code: `awsv unlock`
+asks for the code after the passphrase. `awsv ls` shows `mfa` in the MODE
+column. Accounts without `--mfa` work as before. The device must give a
+six-digit code (an app or a hardware token): the AWS CLI cannot use a FIDO key.
 
 ### rekey — replace the key of an account
 
@@ -190,6 +199,11 @@ awsv unlock all 8h       # every passphrase, one after another
 In your own terminal unlock is optional: the first `aws` command in a locked
 account asks for the passphrase. Cron jobs, scripts and AI assistants cannot
 ask. Open the account for them first.
+
+An account with `--mfa` needs unlock. After the passphrase, unlock asks
+`MFA code for NAME`. STS then makes a session that lasts as long as the window,
+15 minutes at least. When the session ends, aws fails with "the MFA session of
+'NAME' has ended"; run `awsv unlock NAME` again.
 
 ### lock — close now
 

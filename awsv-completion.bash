@@ -71,7 +71,7 @@ _awsv() {
         if [ "$skip" = 1 ]; then skip=0; continue; fi
         case "$w" in
             --) dashes=$i; break ;;
-            --lock|--mode|--region|--as) skip=1 ;;
+            --lock|--mode|--region|--as|--mfa) skip=1 ;;
             -*) ;;
             *) args+=("$w") ;;
         esac
@@ -96,19 +96,20 @@ _awsv() {
         --mode)   _awsv_reply "session direct"; return 0 ;;
         --region) _awsv_reply "$_awsv_regions"; return 0 ;;
         --as)     return 0 ;;   # a new name: nothing to offer
+        --mfa)    _awsv_reply "none arn:aws:iam::"; return 0 ;;   # an ARN, or none to drop it
     esac
 
     case "$cmd" in
         init)
             _awsv_options "--take-default --lock" ;;
         add)   # the first argument is a new name
-            [ "${#args[@]}" -ge 1 ] && _awsv_options "--region --mode --lock --no-verify --stdin" ;;
+            [ "${#args[@]}" -ge 1 ] && _awsv_options "--region --mode --lock --mfa --no-verify --stdin" ;;
         import)
             if [ "${#args[@]}" -eq 0 ]; then _awsv_reply "$(_awsv_sections)"
-            else _awsv_options "--as --keep --region --mode --lock --no-verify"; fi ;;
+            else _awsv_options "--as --keep --region --mode --lock --mfa --no-verify"; fi ;;
         set)
             if [ "${#args[@]}" -eq 0 ]; then _awsv_reply "$(_awsv_names)"
-            else _awsv_options "--region --mode --lock"; fi ;;
+            else _awsv_options "--region --mode --lock --mfa"; fi ;;
         rekey)
             if [ "${#args[@]}" -eq 0 ]; then _awsv_reply "$(_awsv_names)"
             else _awsv_options "--stdin --no-verify"; fi ;;

@@ -176,6 +176,10 @@ FILES
     $ awsv set work --mode session      # tools get a one-hour session; the default
     $ awsv set client --lock own        # client gets a passphrase of its own
     $ awsv set client --lock shared     # client goes back to the shared passphrase
+    $ awsv set client --mfa arn:aws:iam::111122223333:mfa/phone   # its policy requires MFA
+    $ awsv set client --mfa none        # back to no MFA
+  --mfa: aws gets the account only as a session made with an MFA code;
+  unlock asks for the code. Accounts without --mfa are not affected.
   Use direct for Terraform. A session made without MFA cannot call the IAM API.
   A session also needs the account open again when it expires during a long run.
   --lock asks two things: first the passphrase that opens the account now,
@@ -228,6 +232,8 @@ FILES
   A shared passphrase opens every account on it at once.
   Running unlock again starts a new window; the old one ends at once.
   "Error when retrieving credentials from custom-process" means: run awsv unlock.
+  An account with --mfa: after the passphrase, unlock asks for the MFA code and
+  makes a session that lasts as long as the window.
 
 @ lock | close now
     $ awsv lock                         # every passphrase, and every cached session
@@ -492,7 +498,9 @@ drop_cache() {   # NAME, or no argument for every session
 }
 
 session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or from STS
-    local name="$1" cache now exp out errf region
+    local name="$1" cache now exp out errf region mfa margin=300
+    mfa="$(meta_get "$name" mfa)"
+    [ -z "$mfa" ] || margin=60   # an MFA session cannot be renewed here: hand it out to the end
     cache="$(cache_file "$name")"
     now="$(date +%s)"
     if [ -n "$cache" ] && [ -f "$cache" ]; then
@@ -502,11 +510,14 @@ session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or
         if cached "$(home_of "$name")" "$(uid_of "$name")"; then
             { read -r SAKID; read -r SSECRET; read -r STOKEN; read -r SEXP; } < "$cache"
             exp="$(date -d "$SEXP" +%s 2>/dev/null || echo 0)"
-            [ "$exp" -gt $((now + 300)) ] && return 0   # still valid for 5 minutes
+            [ "$exp" -gt $((now + margin)) ] && return 0   # still valid for a while
         else
             rm -f -- "$cache"
         fi
     fi
+    # Without the code there is no session to make: never fall back to one
+    # without MFA, which the account's policy refuses anyway.
+    [ -z "$mfa" ] || die "the MFA session of '$name' has ended or was never started — awsv unlock $name (it asks for the MFA code)"
     decrypt_key "$name"
     region="$(meta_get "$name" region)"
     errf="$(mktemp)"
@@ -519,6 +530,12 @@ session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or
     rm -f "$errf"
     read -r SAKID SSECRET STOKEN SEXP <<< "$out"
     [ -n "$STOKEN" ] || die "STS returned no session for '$name'"
+    save_session "$cache"
+    return 0
+}
+
+save_session() {   # CACHEFILE — writes SAKID SSECRET STOKEN SEXP there
+    local cache="$1"
     # The cache is an optimisation: when it cannot be written, the session is
     # still returned, and the next call asks STS again.
     if [ -n "$cache" ] && mkdir -p "$AWSV_RUN" 2>/dev/null && chmod 700 "$AWSV_RUN" 2>/dev/null; then
@@ -526,6 +543,35 @@ session_creds() {   # NAME — sets SAKID SSECRET STOKEN SEXP, from the cache or
             && mv -f "$cache.tmp" "$cache"
     fi
     return 0
+}
+
+# A session made with an MFA code, for an account whose policy requires MFA.
+# unlock calls it right after the passphrase; the session lasts as long as the
+# unlock window (15 minutes at least, as STS requires), and creds hands it out.
+mfa_session() {   # NAME SECONDS
+    local name="$1" secs="$2" mfa code cache out errf region
+    mfa="$(meta_get "$name" mfa)"; [ -n "$mfa" ] || return 0
+    cache="$(cache_file "$name")"
+    [ -n "$cache" ] || die "an MFA session needs the session cache: set AWSV_RUN to a private directory"
+    [ "$secs" -ge 900 ] || secs=900
+    read -rp "MFA code for $name (${mfa##*/}): " code
+    [[ "$code" =~ ^[0-9]{6}$ ]] || die "the MFA code is six digits; to try again: awsv unlock $name"
+    decrypt_key "$name"
+    region="$(meta_get "$name" region)"
+    errf="$(mktemp)"
+    out="$(aws_with "$AKID" "$SECRET" "" sts get-session-token \
+             --serial-number "$mfa" --token-code "$code" \
+             --duration-seconds "$secs" --region "${region:-us-east-1}" \
+             --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken,Expiration]' \
+             --output text 2>"$errf")" \
+        || { local e; e="$(grep -v '^$' "$errf" | tail -1)"; rm -f "$errf"
+             die "STS refused the MFA session of '$name': $e"; }
+    rm -f "$errf"
+    read -r SAKID SSECRET STOKEN SEXP <<< "$out"
+    [ -n "$STOKEN" ] || die "STS returned no session for '$name'"
+    save_session "$cache"
+    [ -f "$cache" ] || die "the MFA session of $name could not be written to $AWSV_RUN"
+    ok "MFA session for $name until $(date -d "$SEXP" '+%H:%M %Z')"
 }
 
 # ------------------------------------------------------------ ~/.aws/config
@@ -673,13 +719,14 @@ plain_sections() {   # names of the sections that still hold a key in plain text
 
 # ------------------------------------------------------------- the commands
 
-parse_opts() {   # sets REGION MODE LOCK VERIFY STDIN AS KEEP YES from the remaining arguments
-    REGION=""; MODE=""; LOCK=""; VERIFY=1; STDIN=0; AS=""; KEEP=0; YES=0
+parse_opts() {   # sets REGION MODE LOCK VERIFY STDIN AS KEEP YES MFA from the remaining arguments
+    REGION=""; MODE=""; LOCK=""; VERIFY=1; STDIN=0; AS=""; KEEP=0; YES=0; MFA=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --region)    REGION="${2:-}"; shift ;;
             --mode)      MODE="${2:-}"; shift ;;
             --lock)      LOCK="${2:-}"; shift ;;
+            --mfa)       MFA="${2:-}"; shift ;;
             --no-verify) VERIFY=0 ;;
             --stdin)     STDIN=1 ;;
             --as)        AS="${2:-}"; shift ;;
@@ -692,6 +739,14 @@ parse_opts() {   # sets REGION MODE LOCK VERIFY STDIN AS KEEP YES from the remai
     [ -z "$REGION" ] || valid_region "$REGION"
     [ -z "$MODE" ] || valid_mode "$MODE"
     [ -z "$LOCK" ] || valid_lock "$LOCK"
+    [ -z "$MFA" ] || valid_mfa "$MFA"
+}
+
+# An account with an MFA device: its keys reach aws only as a session made with
+# an MFA code, which unlock asks for. Accounts without one are not touched.
+valid_mfa() {
+    [ "$1" = none ] || [[ "$1" =~ ^arn:aws(-[a-z]+)*:iam::[0-9]{12}:mfa/[A-Za-z0-9+=,.@_/-]+$ ]] \
+        || die "bad MFA device '$1': give its ARN, arn:aws:iam::ACCOUNT:mfa/DEVICE (IAM, Security credentials), or none"
 }
 
 read_key() {   # sets AKID SECRET from the terminal or from stdin
@@ -718,6 +773,7 @@ store() {   # NAME REGION MODE LOCK — AKID and SECRET are set
     meta_set "$name" region "$region"
     meta_set "$name" mode "$mode"
     meta_set "$name" lock "$lock"
+    [ -z "${MFA:-}" ] || [ "$MFA" = none ] || meta_set "$name" mfa "$MFA"
     meta_set "$name" added "$(date -Is)"
     if [ -n "$id" ]; then
         meta_set "$name" account "$(printf '%s' "$id" | awk '{print $1}')"
@@ -870,7 +926,7 @@ cmd_ls() {
         # the whole row in one colour: escape codes inside a padded column break the alignment
         printf '%s%-14s %-7s %-8s %-7s %-12s %-14s %s%s\n' "$([ "$n" = "$act" ] && printf '%s' "$G$B")" \
             "$n" "$([ "$n" = "$act" ] && echo '*')" \
-            "$(meta_get "$n" mode)" "$(lock_of "$n")" "$(meta_get "$n" region)" \
+            "$(if [ -n "$(meta_get "$n" mfa)" ]; then echo mfa; else meta_get "$n" mode; fi)" "$(lock_of "$n")" "$(meta_get "$n" region)" \
             "$(meta_get "$n" account)" "$(meta_get "$n" arn)" "$N"
     done
     # Profiles kept outside the vault, which awsv use can make the [default].
@@ -940,13 +996,19 @@ relock() {   # NAME LOCK
 cmd_set() {
     local name="${1:-}"; [ -n "$name" ] || die "usage: awsv set NAME [--region R] [--mode M] [--lock shared|own]"
     shift; need "$name"; parse_opts "$@"
-    [ -n "$REGION$MODE$LOCK" ] || die "nothing to change: give --region, --mode or --lock"
+    [ -n "$REGION$MODE$LOCK$MFA" ] || die "nothing to change: give --region, --mode, --lock or --mfa"
     [ -z "$LOCK" ] || relock "$name" "$LOCK"
     [ -z "$REGION" ] || meta_set "$name" region "$REGION"
     [ -z "$MODE" ] || meta_set "$name" mode "$MODE"
+    if [ "$MFA" = none ]; then meta_del "$name" mfa
+    elif [ -n "$MFA" ]; then meta_set "$name" mfa "$MFA"; fi
     drop_cache "$name"
     write_config
     ok "$name: $(meta_get "$name" mode) mode, $(meta_get "$name" region), $(lock_of "$name") lock"
+    if [ -n "$(meta_get "$name" mfa)" ]; then
+        say "  MFA: $(meta_get "$name" mfa) — aws gets $name only as an MFA session"
+        warn "  Start one with: awsv unlock $name — it asks for the code after the passphrase"
+    elif [ "$MFA" = none ]; then say "  MFA: none — $name works as before"; fi
 }
 
 cmd_rekey() {
@@ -983,7 +1045,7 @@ cmd_exec() {
     [ "${1:-}" = -- ] && shift
     [ $# -gt 0 ] || die "usage: awsv exec NAME -- CMD [ARGS]"
     unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN
-    if [ "$(meta_get "$name" mode)" = direct ]; then
+    if [ "$(meta_get "$name" mode)" = direct ] && [ -z "$(meta_get "$name" mfa)" ]; then
         decrypt_key "$name"
         export AWS_ACCESS_KEY_ID="$AKID" AWS_SECRET_ACCESS_KEY="$SECRET"
     else
@@ -1005,7 +1067,7 @@ cmd_creds() {   # the credential_process entry point
         AWSV_IN_CREDS=1 exec aws configure export-credentials --profile "$name" --format process
     fi
     need "$name"
-    if [ "$(meta_get "$name" mode)" = direct ]; then
+    if [ "$(meta_get "$name" mode)" = direct ] && [ -z "$(meta_get "$name" mfa)" ]; then
         decrypt_key "$name"
         printf '{"Version":1,"AccessKeyId":"%s","SecretAccessKey":"%s"}\n' "$AKID" "$SECRET"
     else
@@ -1083,6 +1145,13 @@ cmd_unlock() {   # [NAME | all] [DURATION], in either order
     else
         open_lock "$target" "$secs"
     fi
+    for n in $(names); do   # the accounts just opened that need an MFA session
+        [ -n "$(meta_get "$n" mfa)" ] || continue
+        if [ "$target" = all ] || [ "$n" = "$target" ] \
+           || { [ "$(lock_of "$n")" = shared ] && [ "$(lock_of "$target")" = shared ]; }; then
+            mfa_session "$n" "$secs"
+        fi
+    done
     say "  Until then every process of this user can read those keys without a question: awsv help show"
     say "  Close earlier: awsv lock closes everything, awsv lock NAME closes one passphrase"
 }
