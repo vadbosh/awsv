@@ -143,6 +143,7 @@ FILES
   No --lock, and new accounts get the shared passphrase: add asks which one,
   1 shared or 2 its own. Without a terminal (--stdin) it takes the shared one.
   A shared result is said in yellow, with the command that gives it its own.
+  import asks and warns the same way.
 
 @ import | move a key from ~/.aws/credentials into the vault
     $ awsv import client                # works for [client] and for a commented #[client]
@@ -798,25 +799,29 @@ cmd_add() {
     exists "$name" && die "'$name' is in the vault already — to replace its key: awsv rekey $name"
     initialized || die "the vault is not set up yet — run 'awsv init' first"
     check_config
-    # No --lock on a vault whose default is the shared passphrase: a terminal
-    # gets the choice; a script gets the shared one. Either way a shared result
-    # is said in colour, since opening one of those accounts opens them all.
-    local others warn_shared=0
-    others="$(names shared | joined)"
-    if [ -z "$LOCK" ]; then
-        LOCK="$(default_lock)"
-        if [ "$LOCK" = shared ]; then
-            warn_shared=1
-            if [ "$STDIN" = 0 ] && [ -t 0 ] && [ -t 1 ]; then ask_add_lock "$name" "$others"; fi
-            [ "$LOCK" = shared ] || warn_shared=0
-        fi
-    fi
+    choose_lock "$name"
     read_key
     store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "$LOCK"
-    if [ "$warn_shared" = 1 ]; then
-        warn "  $name opens with the shared passphrase${others:+, the same as $others}: unlocking one unlocks them all."
-        warn "  For a passphrase of its own: awsv set $name --lock own"
-    fi
+    warn_shared_lock "$name"
+}
+
+# No --lock on a vault whose default is the shared passphrase: a terminal gets
+# the choice; a script gets the shared one. Either way a shared result is said
+# in colour, since opening one of those accounts opens them all. add and
+# import call both; LOCK comes from parse_opts.
+choose_lock() {   # NAME — sets LOCK, LOCK_OTHERS, LOCK_WARN
+    LOCK_OTHERS="$(names shared | joined)"; LOCK_WARN=0
+    [ -z "$LOCK" ] || return 0
+    LOCK="$(default_lock)"
+    [ "$LOCK" = shared ] || return 0
+    if [ "$STDIN" = 0 ] && [ -t 0 ] && [ -t 1 ]; then ask_add_lock "$1" "$LOCK_OTHERS"; fi
+    [ "$LOCK" = shared ] && LOCK_WARN=1
+    return 0
+}
+warn_shared_lock() {   # NAME
+    [ "${LOCK_WARN:-0}" = 1 ] || return 0
+    warn "  $1 opens with the shared passphrase${LOCK_OTHERS:+, the same as $LOCK_OTHERS}: unlocking one unlocks them all."
+    warn "  For a passphrase of its own: awsv set $1 --lock own"
 }
 
 ask_add_lock() {   # NAME OTHERS — sets LOCK
@@ -847,11 +852,13 @@ cmd_import() {
     [ -n "$AKID" ] && [ -n "$SECRET" ] || die "[$sec] has no aws_access_key_id / aws_secret_access_key"
     # The check runs before the key is stored, so a failure leaves both files as they were.
     check_config
-    store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "${LOCK:-$(default_lock)}"
+    choose_lock "$name"
+    store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "$LOCK"
     if [ "$KEEP" = 0 ]; then
         drop_section "$sec" "$name"
         ok "  removed [$sec] from $CREDS (encrypted backup in $BACKUP)"
     fi
+    warn_shared_lock "$name"
 }
 
 cmd_ls() {

@@ -103,6 +103,8 @@ awsv import client --no-verify       # do not ask AWS if the key works
 ```
 
 The section leaves the file; an encrypted copy of the file goes to `backup/`.
+Without `--lock`, import asks which passphrase locks the account and warns about
+a shared one, the same as add.
 
 ### ls — list the accounts
 

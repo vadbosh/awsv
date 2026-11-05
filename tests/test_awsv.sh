@@ -103,6 +103,8 @@ hasnt "vault file is not plain text" 'AKIA000000000001' "$V/keys/alpha.gpg"
 hasnt "section removed from credentials" '^\[default\]' "$AWS_SHARED_CREDENTIALS_FILE"
 yes_ ls "$V"/backup/credentials.*.gpg >/dev/null
 t "import commented section" 0 awsv import beta --no-verify --mode direct
+has "import without --lock: the shared passphrase in colour" 'beta opens with the shared passphrase, the same as alpha' "$T/out"
+has "import: and how to give it its own" 'awsv set beta --lock own' "$T/out"
 hasnt "commented section removed" 'beta' "$AWS_SHARED_CREDENTIALS_FILE"
 t "import missing section" 1 awsv import nosuch --no-verify
 
