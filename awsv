@@ -140,6 +140,9 @@ FILES
   Type the key here. Do not put it into ~/.aws/credentials first.
   AWS checks the key before awsv stores it.
   With a passphrase of its own, add asks you to choose it, twice.
+  No --lock, and new accounts get the shared passphrase: add asks which one,
+  1 shared or 2 its own. Without a terminal (--stdin) it takes the shared one.
+  A shared result is said in yellow, with the command that gives it its own.
 
 @ import | move a key from ~/.aws/credentials into the vault
     $ awsv import client                # works for [client] and for a commented #[client]
@@ -795,8 +798,34 @@ cmd_add() {
     exists "$name" && die "'$name' is in the vault already — to replace its key: awsv rekey $name"
     initialized || die "the vault is not set up yet — run 'awsv init' first"
     check_config
+    # No --lock on a vault whose default is the shared passphrase: a terminal
+    # gets the choice; a script gets the shared one. Either way a shared result
+    # is said in colour, since opening one of those accounts opens them all.
+    local others warn_shared=0
+    others="$(names shared | joined)"
+    if [ -z "$LOCK" ]; then
+        LOCK="$(default_lock)"
+        if [ "$LOCK" = shared ]; then
+            warn_shared=1
+            if [ "$STDIN" = 0 ] && [ -t 0 ] && [ -t 1 ]; then ask_add_lock "$name" "$others"; fi
+            [ "$LOCK" = shared ] || warn_shared=0
+        fi
+    fi
     read_key
-    store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "${LOCK:-$(default_lock)}"
+    store "$name" "${REGION:-us-east-1}" "${MODE:-session}" "$LOCK"
+    if [ "$warn_shared" = 1 ]; then
+        warn "  $name opens with the shared passphrase${others:+, the same as $others}: unlocking one unlocks them all."
+        warn "  For a passphrase of its own: awsv set $name --lock own"
+    fi
+}
+
+ask_add_lock() {   # NAME OTHERS — sets LOCK
+    local a
+    say "${B}Which passphrase locks $1?${N}"
+    say "  ${C}1${N}  the shared one${2:+, the same as $2}  ${D}— nothing new to remember${N}"
+    say "  ${C}2${N}  its own  ${D}— gpg asks for a new passphrase twice; $1 opens and locks apart${N}"
+    read -rp "Choose 1 or 2 [1]: " a
+    case "${a:-1}" in 1) LOCK=shared ;; 2) LOCK=own ;; *) die "answer 1 or 2" ;; esac
 }
 
 cmd_import() {

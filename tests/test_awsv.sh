@@ -148,6 +148,12 @@ printf 'NOTAKEY\nsecret\n' > "$T/in"
 t "add rejects a malformed key id" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
 printf 'AKIA000000000003\n0000000000\n' > "$T/in"
 t "add from stdin" 0 sh -c "awsv add other --stdin --no-verify --mode direct < '$T/in'"
+has "no --lock: the shared passphrase is said in colour" 'other opens with the shared passphrase, the same as ' "$T/out"
+has "and how to give it its own" 'For a passphrase of its own: awsv set other --lock own' "$T/out"
+printf 'AKIA000000000005\n0000000000\n' > "$T/in2"
+t "add --lock shared, chosen" 0 sh -c "awsv add chosen --stdin --no-verify --mode direct --lock shared < '$T/in2'"
+hasnt "a chosen shared lock: no warning" 'opens with the shared passphrase' "$T/out"
+t "rm chosen" 0 awsv rm chosen --yes
 t "add twice refused" 1 sh -c "awsv add other --stdin --no-verify < '$T/in'"
 
 # show prints a secret, so it must refuse anywhere a log could keep it.
@@ -243,12 +249,14 @@ sed -i '/^relock_from=/d; s/^lock=.*/lock=shared/' "$V/meta/other"   # as it was
 printf 'AKIA000000000006\n0000000000\n' > "$T/in"
 t "add --lock own" 0 sh -c "awsv add solo --stdin --no-verify --mode direct --lock own < '$T/in'"
 has "says how to open it" 'awsv unlock solo' "$T/out"
+hasnt "--lock own: no shared warning" 'opens with the shared passphrase' "$T/out"
 yes_ [ -d "$V/gnupg/solo" ]
 t "rm takes its GPG home too" 0 awsv rm solo --yes
 yes_ [ ! -e "$V/gnupg/solo" ]
 t "init --lock own" 0 awsv init --lock own
 yes_ [ "$(cat "$V/lock")" = own ]
 t "a new account gets its own" 0 sh -c "awsv add solo --stdin --no-verify --mode direct < '$T/in'"
+hasnt "the vault default is own: no shared warning" 'opens with the shared passphrase' "$T/out"
 yes_ [ "$(sed -n 's/^lock=//p' "$V/meta/solo")" = own ]
 t "status says what new accounts get" 0 awsv status
 has "own" '^  new +a new account gets a passphrase of its own' "$T/out"

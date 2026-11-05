@@ -84,6 +84,14 @@ printf '%s\n%s\n' "$KEY_ID" "$SECRET" | awsv add ci --stdin   # key id and secre
 Without `--stdin`, add reads the key from the terminal and does not show the
 secret.
 
+Without `--lock`, add checks what the vault gives new accounts. When that is
+the shared passphrase, add asks: 1, the shared one, or 2, its own. With
+`--stdin` there is no question, and add takes the shared one. If the account
+ends up on the shared passphrase and `--lock shared` was not given, add says so
+in yellow. Unlocking one account on that passphrase unlocks all of them. add
+also prints the command that gives the account its own passphrase:
+`awsv set NAME --lock own`.
+
 ### import — move a key out of `~/.aws/credentials`
 
 ```bash
