@@ -191,6 +191,7 @@ t "--mfa set" 0 awsv set other --mfa arn:aws:iam::111122223333:mfa/phone
 has "says how to start a session" 'awsv unlock other' "$T/out"
 t "ls with an MFA account" 0 awsv ls
 has "MODE says mfa" '^other +mfa +shared ' "$T/out"
+has "SESSION column says END/LEFT" '^NAME +DEFAULT +MODE +LOCK +SESSION\(END/LEFT\) ' "$T/out"
 has "ls: SESSION none before unlock" '^other +mfa +shared +none ' "$T/out"
 t "status of an MFA account" 0 awsv status
 has "status: mode mfa" '^    mode +mfa — tools get a session made with an MFA code' "$T/out"
@@ -218,7 +219,7 @@ EOF
     has "STS gets the device, the code and the window" '--serial-number arn:aws:iam::111122223333:mfa/phone --token-code 123456 --duration-seconds 1800' "$T/mfa.log"
     has "the MFA session is in the cache" '^ASIA000000000088$' "$AWSV_RUN/other"
     t "ls after unlock" 0 awsv ls
-    has "ls: SESSION says until when and how long" '^other +mfa +shared +[0-9]{2}:[0-9]{2} \((29m|30m)\) ' "$T/out"
+    has "ls: SESSION says until when and how long" '^other +mfa +shared +[0-9]{2}:[0-9]{2}/(29m|30m) ' "$T/out"
     printf '12\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1
     has "a short code is refused" 'the MFA code is six digits; to try again: awsv unlock other' "$T/out"
     printf '654321\n' | script -qc "awsv unlock other 30m" /dev/null > "$T/out" 2>&1

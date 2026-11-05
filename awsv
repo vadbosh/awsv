@@ -940,7 +940,7 @@ cmd_ls() {
     act="$(active)"
     # Rows first, widths after: each column is as wide as its longest value, so
     # the table stays narrow whatever the names and ARNs are.
-    rows+=("NAME|DEFAULT|MODE|LOCK|SESSION|REGION|ACCOUNT|ARN"); lit+=(head)
+    rows+=("NAME|DEFAULT|MODE|LOCK|SESSION(END/LEFT)|REGION|ACCOUNT|ARN"); lit+=(head)
     for n in $(names); do
         rows+=("$n|$([ "$n" = "$act" ] && echo '*')|$(if [ -n "$(meta_get "$n" mfa)" ]; then echo mfa; else meta_get "$n" mode; fi)|$(lock_of "$n")|$(ls_session "$n")|$(meta_get "$n" region)|$(meta_get "$n" account)|$(meta_get "$n" arn)")
         lit+=("$([ "$n" = "$act" ] && echo on)")
@@ -979,7 +979,7 @@ ls_session() {   # NAME
     exp_s="$(date -d "$(sed -n 4p "$cache")" +%s 2>/dev/null || echo 0)"
     left=$(( exp_s - $(date +%s) ))
     if [ "$left" -le 60 ]; then echo ended
-    else echo "$(date -d "@$exp_s" '+%H:%M') ($(human "$left"))"; fi
+    else echo "$(date -d "@$exp_s" '+%H:%M')/$(human "$left")"; fi
 }
 
 cmd_use() {
