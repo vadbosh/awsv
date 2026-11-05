@@ -217,6 +217,11 @@ rm "$AWS_SHARED_CREDENTIALS_FILE"
 # ------------------------------------------------------------- status
 t "status" 0 awsv-sso status
 has "status lists work" '^work +111122223333 +Admin +live' "$T/out"
+has "status: when the token ends, and that it renews" '^work .*live, token until [0-9]{2}:[0-9]{2} UTC \(renews itself\)' "$T/out"
+mv "$HOME/.aws/sso/cache/0123.json" "$T/token.json"
+t "status with no token left" 0 awsv-sso status
+has "status: keys cached, token ended" '^work .*live \(keys cached by the AWS CLI; the token has ended\)' "$T/out"
+mv "$T/token.json" "$HOME/.aws/sso/cache/0123.json"
 has "status lists work-admin" '^work-admin ' "$T/out"
 hasnt "status skips non-SSO profiles" '^other ' "$T/out"
 hasnt "status skips vault accounts" '^alpha ' "$T/out"

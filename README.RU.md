@@ -201,7 +201,8 @@ awsv unlock all 8h       # все пароли, по очереди
 Аккаунту с `--mfa` unlock нужен всегда: после пароля он спрашивает
 `MFA code for NAME`, и STS делает сессию на время окна, не меньше 15 минут.
 Когда сессия кончится, aws ответит «the MFA session of 'NAME' has ended» — снова
-выполните `awsv unlock NAME`.
+выполните `awsv unlock NAME`. Сколько осталось до конца MFA-сессии, показывают
+`awsv ls` и `awsv status`.
 
 ### lock — закрыть сейчас
 

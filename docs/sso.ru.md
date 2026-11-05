@@ -133,12 +133,17 @@ awsv-sso status
 
 ```
 NAME             DEFAULT ACCOUNT        ROLE                     LOGIN
-work             *       111122223333   ReadOnly                 live
-work-admin               111122223333   Admin                    live
+work             *       111122223333   ReadOnly                 live, token until 15:02 UTC (renews itself)
+work-admin               111122223333   Admin                    live, token until 15:02 UTC (renews itself)
 ```
 
 `*` стоит у профиля, через который работает `[default]`. `expired or never` в
 колонке `LOGIN` значит: выполните `awsv-sso login NAME`.
+
+Время в `LOGIN` — когда кончится текущий access token. AWS CLI сам обновляет
+токен, пока жива сессия портала, а когда она кончится, нужен новый вход. Длину
+этой сессии задают в IAM Identity Center, AWS CLI её не хранит, поэтому
+awsv-sso показать её не может.
 
 ## Выход
 

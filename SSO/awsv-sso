@@ -200,6 +200,10 @@ json_str() {   # file key: a string value of a one-line JSON file
 # ~/.aws/sso/cache with that startUrl and an accessToken. It goes only into
 # the caller's variable, never to the terminal.
 sso_token() {
+    local f; f="$(sso_token_file "$1")" || return 1
+    json_str "$f" accessToken
+}
+sso_token_file() {   # START_URL — the path of that cache file
     local f best=""
     for f in "$SSO_CACHE"/*.json; do
         [[ -f "$f" ]] || continue
@@ -208,7 +212,20 @@ sso_token() {
         if [[ -z "$best" || "$f" -nt "$best" ]]; then best="$f"; fi
     done
     [[ -n "$best" ]] || return 1
-    json_str "$best" accessToken
+    printf '%s\n' "$best"
+}
+
+# When the access token of a login ends. The AWS CLI renews it by itself while
+# the portal session lasts; that end is set in IAM Identity Center and is not
+# in the cache, so the time shown is the token's, not the session's.
+token_until() {   # PROFILE — prints "HH:MM" or nothing
+    local s u f e
+    s="$(ini_get "profile $1" sso_session)"; [[ -n "$s" ]] || return 0
+    u="$(ini_get "sso-session $s" sso_start_url)"; [[ -n "$u" ]] || return 0
+    f="$(sso_token_file "$u")" || return 0
+    e="$(date -d "$(json_str "$f" expiresAt)" +%s 2>/dev/null)" || return 0
+    (( e > $(date +%s) )) && date -d "@$e" '+%H:%M %Z'
+    return 0
 }
 
 # One call of the SSO portal API. The token goes into a file only this user
@@ -401,7 +418,9 @@ cmd_status() {
     for p in "${names[@]}"; do
         mark=""; [[ "$p" == "$d" ]] && mark="*"
         if arn="$(aws sts get-caller-identity --profile "$p" --query Arn --output text 2>/dev/null)"; then
-            state="${G}live${N}"
+            local until; until="$(token_until "$p")"
+            if [[ -n "$until" ]]; then state="${G}live${N}, token until $until (renews itself)"
+            else state="${G}live${N} ${D}(keys cached by the AWS CLI; the token has ended)${N}"; fi
         else
             state="${D}expired or never — awsv-sso login $p${N}"
         fi
@@ -527,7 +546,10 @@ ${B}COLUMNS${N}
   DEFAULT   * when [default] is this profile (awsv use NAME)
   ACCOUNT   sso_account_id of the profile
   ROLE      sso_role_name of the profile
-  LOGIN     live, or expired or never: then awsv-sso login NAME
+  LOGIN     live, token until HH:MM (renews itself): the AWS CLI renews the
+            token while the portal session lasts. That end is set in IAM
+            Identity Center and the CLI does not keep it. Or: expired or
+            never, then awsv-sso login NAME
 EOF
 }
 

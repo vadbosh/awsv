@@ -545,6 +545,23 @@ save_session() {   # CACHEFILE — writes SAKID SSECRET STOKEN SEXP there
     return 0
 }
 
+# How long the MFA session of NAME has left, for status and ls. Only the expiry
+# line of the cache is read; the keys in it are not.
+mfa_left() {   # NAME
+    local cache exp_s now left
+    cache="$(cache_file "$1")"; now="$(date +%s)"
+    if [ -z "$cache" ] || [ ! -f "$cache" ]; then
+        printf '%s\n' "${Y}no MFA session${N} — awsv unlock $1 (it asks for the code)"; return 0
+    fi
+    exp_s="$(date -d "$(sed -n 4p "$cache")" +%s 2>/dev/null || echo 0)"
+    left=$(( exp_s - now ))
+    if [ "$left" -le 60 ]; then
+        printf '%s\n' "${Y}MFA session ended${N} — awsv unlock $1"
+    else
+        printf '%s\n' "${G}MFA session${N} until $(date -d "@$exp_s" '+%H:%M %Z'), $(human "$left") left"
+    fi
+}
+
 # A session made with an MFA code, for an account whose policy requires MFA.
 # unlock calls it right after the passphrase; the session lasts as long as the
 # unlock window (15 minutes at least, as STS requires), and creds hands it out.
@@ -938,6 +955,10 @@ cmd_ls() {
             "$(external_region "$n")" - "[profile $n] in $CONFIG" "$N"
     done
     [ "$any" = 1 ] || say "${D}(the vault is empty — awsv add NAME, or awsv import SECTION)${N}"
+    for n in $(names); do   # MFA accounts: how long their session has left
+        [ -n "$(meta_get "$n" mfa)" ] && say "  $n: $(mfa_left "$n")"
+    done
+    return 0
 }
 
 cmd_use() {
@@ -1320,7 +1341,10 @@ cmd_status() {
         say "    account   ${acct:-not checked — stored with --no-verify}"
         say "    user      ${arn:-not checked}"
         say "    region    $(meta_get "$n" region)"
-        if [ "$mode" = direct ]; then
+        if [ -n "$(meta_get "$n" mfa)" ]; then
+            say "    mode      mfa — tools get a session made with an MFA code ($(meta_get "$n" mfa))"
+            say "    session   $(mfa_left "$n")"
+        elif [ "$mode" = direct ]; then
             say "    mode      direct — tools get the stored key itself"
             say "    session   none — direct mode does not use sessions"
         else

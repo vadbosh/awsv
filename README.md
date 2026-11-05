@@ -203,7 +203,8 @@ ask. Open the account for them first.
 An account with `--mfa` needs unlock. After the passphrase, unlock asks
 `MFA code for NAME`. STS then makes a session that lasts as long as the window,
 15 minutes at least. When the session ends, aws fails with "the MFA session of
-'NAME' has ended"; run `awsv unlock NAME` again.
+'NAME' has ended"; run `awsv unlock NAME` again. `awsv ls` and `awsv status`
+show how long the MFA session has left.
 
 ### lock — close now
 

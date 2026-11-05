@@ -131,12 +131,17 @@ awsv-sso status
 
 ```
 NAME             DEFAULT ACCOUNT        ROLE                     LOGIN
-work             *       111122223333   ReadOnly                 live
-work-admin               111122223333   Admin                    live
+work             *       111122223333   ReadOnly                 live, token until 15:02 UTC (renews itself)
+work-admin               111122223333   Admin                    live, token until 15:02 UTC (renews itself)
 ```
 
 `*` marks the profile `[default]` uses. `expired or never` in `LOGIN` means:
 run `awsv-sso login NAME`.
+
+The time in `LOGIN` is when the current access token ends. The AWS CLI renews
+the token by itself while the portal session lasts. When that session ends,
+the next login is needed. Its length is set in IAM Identity Center, and the
+AWS CLI does not keep it, so awsv-sso cannot show it.
 
 ## Log out
 
