@@ -187,8 +187,8 @@ FILES
   Then deactivate the old key in IAM. AWS still accepts it.
 
 @ rm | remove an account
+    $ awsv use work                     # first, when old is [default]: rm refuses it
     $ awsv rm old                       # asks you to confirm
-    $ awsv use work                     # when old was [default]
   Then deactivate the key in IAM. Removal from the vault does not revoke it.
   An account with its own passphrase loses its GPG key too.
 
@@ -960,6 +960,9 @@ cmd_rekey() {
 cmd_rm() {
     local name="${1:-}" a lock; [ -n "$name" ] || die "usage: awsv rm NAME [--yes]"
     shift; need "$name"; parse_opts "$@"
+    # [default] changes only with the use command. Removing the account it points at
+    # would leave plain aws and Terraform with no keys, so that is refused.
+    [ "$(active)" = "$name" ] && die "$name is [default]: plain aws and Terraform use it. Switch [default] first: awsv use NAME (see awsv ls), then awsv rm $name"
     if [ "$YES" = 0 ]; then
         need_tty "a confirmation (or pass --yes)"
         read -rp "${R}${B}Delete $name${N} ($(meta_get "$name" arn)) from the vault? [y/N] " a
@@ -969,11 +972,9 @@ cmd_rm() {
     rm -f "$KEYS/$name.gpg" "$META/$name"
     [ "$lock" = own ] && drop_home "$name"     # its own GPG key opens nothing else
     drop_cache "$name"
-    [ "$(active)" = "$name" ] && : > "$AWSV_HOME/active"
     write_config
     ok "removed $name"
     warn "  its key is still valid in AWS — deactivate it in IAM if it is no longer needed"
-    [ -n "$(active)" ] || warn "  no [default] profile now — awsv use NAME"
 }
 
 cmd_exec() {

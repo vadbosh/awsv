@@ -273,7 +273,12 @@ t "rm alpha" 0 awsv rm alpha --yes
 yes_ [ ! -e "$V/keys/alpha.gpg" ]
 hasnt "profile gone" '^\[profile alpha\]' "$AWS_CONFIG_FILE"
 has "beta still default" 'creds beta$' "$AWS_CONFIG_FILE"
-t "rm beta" 0 awsv rm beta --yes
+t "rm of the [default] account is refused" 1 awsv rm beta --yes
+has "it says to switch first" 'beta is \[default\]: .*Switch \[default\] first: awsv use NAME' "$T/out"
+yes_ [ -e "$V/keys/beta.gpg" ]
+has "[default] untouched" 'creds beta$' "$AWS_CONFIG_FILE"
+: > "$V/active"   # a vault with no [default], as rm used to leave it; the tests below start there
+t "rm beta, no longer [default]" 0 awsv rm beta --yes
 has "no default now" 'no active account' "$AWS_CONFIG_FILE"
 t "rm needs a terminal or --yes" 1 awsv rm other < /dev/null
 

@@ -158,6 +158,10 @@ awsv rm old          # asks to confirm
 awsv rm old --yes    # no question
 ```
 
+rm does not remove the account that is `[default]`: plain `aws` and Terraform
+would have no keys. Switch `[default]` first with `awsv use NAME`, then remove
+the account. `[default]` changes only with `awsv use NAME`.
+
 Then deactivate the key in IAM. Removing it from the vault does not revoke it.
 
 ### show — print a stored key
