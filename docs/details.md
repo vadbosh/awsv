@@ -315,7 +315,7 @@ is complete and everything works.
 ```
 
 The second test collects every `awsv …` a reader can see: in the help, the
-README files, `docs/`, the status output and the messages of awsv. It runs each
+README files, `docs/`, the `status` output and the messages of awsv. It runs each
 one. A text that looks like a command but is not one fails the test.
 
 It runs in a temporary home directory with fake keys. Your vault, `~/.aws` and
