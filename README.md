@@ -144,9 +144,9 @@ awsv set client --mfa none           # no MFA again
 ```
 
 `--mfa` is for an IAM user whose policy allows nothing without MFA. Give it the
-ARN of the MFA device from IAM, Security credentials of that user. From then on
-aws gets the account only as a session made with an MFA code: `awsv unlock`
-asks for the code after the passphrase. `awsv ls` shows `mfa` in the MODE
+ARN of the MFA device: IAM → Users → the user → Security credentials. From then
+on aws gets the keys of the account only as a session made with an MFA code.
+`awsv unlock` asks for the code after the passphrase. `awsv ls` shows `mfa` in the MODE
 column. Accounts without `--mfa` work as before. The device must give a
 six-digit code (an app or a hardware token): the AWS CLI cannot use a FIDO key.
 

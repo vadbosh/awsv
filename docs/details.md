@@ -200,22 +200,22 @@ the account to `direct`, or open a window long enough for it:
 
 ### When the passphrase is asked
 
-Only when you run `awsv unlock`, `awsv show NAME` or `awsv set NAME --lock own`. `aws`
-and every tool behind it never ask. awsv runs gpg with `--pinentry-mode error`,
+awsv asks for a passphrase only when you run `awsv unlock`, `awsv show NAME`
+or `awsv set NAME --lock own`. `aws` and every tool behind it never ask. awsv runs gpg with `--pinentry-mode error`,
 so a locked account fails at once. Without it, gpg would open a prompt on the
 terminal that `GPG_TTY` names, where nobody may be there to answer. The passphrase stays
 open for the window you chose with `awsv unlock`. Each own passphrase has its
 own window.
 
-A command without a terminal cannot ask. It fails with
-`Error when retrieving credentials from custom-process`. This happens to cron
-jobs, scripts and AI assistants. The error names the account. Run
+An `aws` command on a locked account fails with
+`Error when retrieving credentials from custom-process`, in a terminal or in a
+cron job, a script or an AI assistant alike. The error names the account. Run
 `awsv unlock NAME` with that name in your own terminal, and they work again.
 
 ### After a reboot
 
-Nothing to do. Every account starts locked and the session cache is empty. The
-first `aws` command in a terminal asks for the passphrase.
+Every account starts locked and the session cache is empty. Open the accounts
+you need: `awsv unlock NAME`, or `awsv unlock all 8h`.
 
 ### Seeing a stored key
 
