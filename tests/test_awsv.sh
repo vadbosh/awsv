@@ -352,6 +352,10 @@ t "status after lock" 0 awsv status
 has "locked, on its own line" '^  state +LOCKED' "$T/out"
 t "locked vault gives nothing without a terminal" 1 awsv creds locked
 has "and says what to do" 'awsv unlock' "$T/out"
+# GPG_TTY set, as ~/.bashrc does for every process of the user: creds must
+# still fail at once, never open a prompt there. timeout catches a hang.
+t "locked, GPG_TTY set: fails at once, asks nothing" 1 env GPG_TTY=/dev/null timeout 15 awsv creds locked
+has "names the state and the command" "'locked' is locked: its passphrase is not open, and it is never asked for here" "$T/out"
 hasnt "no key in the error" 'AKIA000000000005' "$T/out"
 
 # A cached session follows its passphrase. While gpg-agent holds the

@@ -196,9 +196,11 @@ awsv unlock prod 30m     # the passphrase that opens prod
 awsv unlock all 8h       # every passphrase, one after another
 ```
 
-In your own terminal unlock is optional: the first `aws` command in a locked
-account asks for the passphrase. Cron jobs, scripts and AI assistants cannot
-ask. Open the account for them first.
+`aws` never asks for a passphrase, not even in your own terminal. A locked
+account fails at once: "'NAME' is locked … Open it in your terminal:
+awsv unlock NAME". The passphrase window opens only when you run unlock
+yourself. So aws, Terraform or an AI assistant never leave a prompt hanging in
+your terminal.
 
 An account with `--mfa` needs unlock. After the passphrase, unlock asks
 `MFA code for NAME`. STS then makes a session that lasts as long as the window,

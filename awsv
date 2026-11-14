@@ -267,9 +267,8 @@ FILES
     $ awsv lock                         # closes every passphrase
 
   unlock is per passphrase, not per account: one unlock for the shared one,
-  one for each account with its own. In your own terminal unlock is optional:
-  the first aws command in a locked account asks for its passphrase.
-  Cron, scripts and assistants have no terminal: open the account for them first.
+  one for each account with its own. aws never asks for a passphrase: a locked
+  account fails at once with "is locked … awsv unlock NAME". Open it yourself.
   ! A shared passphrase opens every account on it: awsv unlock work 30m opens them all.
   ! awsv status shows, for each account, which passphrase opens it and whether it is open.
 EOF
@@ -462,12 +461,21 @@ seal_key() {   # NAME LOCK — encrypts into NAME.gpg.tmp and leaves it there
         || die "encryption failed"
 }
 
-decrypt_key() {   # NAME — sets AKID and SECRET
-    local out errf why
+# Without "ask", gpg is told never to ask for the passphrase: creds and exec
+# run under aws, Terraform or an assistant, where nobody can answer, and a
+# prompt drawn on the terminal GPG_TTY names only hangs that terminal. A locked
+# account then fails at once and names awsv unlock. Only commands the user
+# types — show, set --lock — pass "ask".
+decrypt_key() {   # NAME [ask] — sets AKID and SECRET
+    local out errf why mode=error
+    [ "${2:-}" = ask ] && mode=ask
     errf="$(mktemp)"
-    if ! out="$(g "$(home_of "$1")" --quiet --decrypt "$KEYS/$1.gpg" 2>"$errf" </dev/null)"; then
+    if ! out="$(g "$(home_of "$1")" --pinentry-mode "$mode" --quiet --decrypt "$KEYS/$1.gpg" 2>"$errf" </dev/null)"; then
         why="$(grep -m1 -v '^gpg: encrypted with' "$errf")"; rm -f "$errf"
-        die "cannot open '$1' — ${why:-gpg failed}. If it is locked, open it in your terminal: awsv unlock $1"
+        if [ "$mode" = error ]; then
+            die "'$1' is locked: its passphrase is not open, and it is never asked for here. Open it in your terminal: awsv unlock $1"
+        fi
+        die "cannot open '$1' — ${why:-gpg failed}"
     fi
     rm -f "$errf"
     AKID="$(printf '%s\n' "$out" | sed -n 's/^AccessKeyId=//p')"
@@ -1019,7 +1027,7 @@ relock() {   # NAME LOCK
     [ -t 0 ] && { GPG_TTY="$(tty)"; export GPG_TTY; }
     if [ "$old" = own ]; then say "${B}Step 1 of 2:${N} type the passphrase of $name, if gpg asks."
     else say "${B}Step 1 of 2:${N} type the shared passphrase, if gpg asks. When it is in memory, gpg asks nothing."; fi
-    decrypt_key "$name"
+    decrypt_key "$name" ask
     [ "$2" = own ] && say "${B}Step 2 of 2:${N} choose the new passphrase of $name."
     # One commit point, the mv. Before it the meta says "swapping from $old"
     # and the old file is in place; lock_of reads that state off the disk.
@@ -1225,7 +1233,7 @@ cmd_show() {
     { [ -t 0 ] && [ -t 1 ]; } \
         || die "show prints a secret, so it runs only in a terminal — not in a pipe, a script or an assistant's shell"
     GPG_TTY="$(tty)"; export GPG_TTY
-    decrypt_key "$name"
+    decrypt_key "$name" ask
     warn "The secret key of $name. Clear the screen when you are done."
     say "aws_access_key_id     = $AKID"
     say "aws_secret_access_key = $SECRET"

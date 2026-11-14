@@ -103,9 +103,9 @@ its own `awsv unlock NAME`. To open everything at the start of the day, run
 `awsv unlock all 8h`. It asks for each passphrase once: the shared one first,
 then each own one.
 
-In your own terminal you can skip `unlock`: the first `aws` command in a locked
-account asks for its passphrase. Cron jobs, scripts and AI assistants have no
-terminal to ask in. Open the account for them before they start.
+`aws` never asks for a passphrase. A locked account fails at once and names
+`awsv unlock NAME`. Run it yourself. Then `aws`, cron jobs, scripts and AI
+assistants all work until the window ends.
 
 `awsv status` shows two lines in each account's block. `lock` says which
 passphrase opens the account. `state` says whether it is open now and gives the
@@ -200,10 +200,12 @@ the account to `direct`, or open a window long enough for it:
 
 ### When the passphrase is asked
 
-The first `aws` command in a locked account asks for the passphrase in your
-terminal: the shared one, or the account's own. After that it is quiet for the
-window you chose last time with `awsv unlock`; 8 hours if you never chose one.
-Each own passphrase has its own window.
+Only when you run `awsv unlock`, `awsv show NAME` or `awsv set NAME --lock own`. `aws`
+and every tool behind it never ask. awsv runs gpg with `--pinentry-mode error`,
+so a locked account fails at once. Without it, gpg would open a prompt on the
+terminal that `GPG_TTY` names, where nobody may be there to answer. The passphrase stays
+open for the window you chose with `awsv unlock`. Each own passphrase has its
+own window.
 
 A command without a terminal cannot ask. It fails with
 `Error when retrieving credentials from custom-process`. This happens to cron
